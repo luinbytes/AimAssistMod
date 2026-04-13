@@ -154,9 +154,9 @@ public partial class MimiMod
             windStrength = 0f;
             nextPredictedPathRefreshTime = 0f;
         }
-        if (GUILayout.Button("Wind = 0.01 (default)", cachedButtonStyle))
+        if (GUILayout.Button("Wind = 0.0041 (default)", cachedButtonStyle))
         {
-            windStrength = 0.01f;
+            windStrength = 0.0041f;
             nextPredictedPathRefreshTime = 0f;
         }
         GUILayout.EndHorizontal();

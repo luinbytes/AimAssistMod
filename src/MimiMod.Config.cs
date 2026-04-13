@@ -47,7 +47,7 @@ public partial class MimiMod
         settingsGuiKeyName = "F8";
         allowOvercharge = false;
         instaHitEnabled = false;
-        windStrength = 0.01f;
+        windStrength = 0.0041f;
         actualTrailEnabled = true;
         predictedTrailEnabled = true;
         frozenTrailEnabled = true;
@@ -206,8 +206,8 @@ public partial class MimiMod
         if (includeComments)
         {
             builder.AppendLine();
-            builder.AppendLine("# Wind strength multiplier for the predicted trajectory (0 = ignore wind, 0.04 default).");
-            builder.AppendLine("# Dial it live from the settings GUI slider until the predicted curve matches actual shots.");
+            builder.AppendLine("# Wind strength multiplier for the predicted trajectory (0 = ignore wind, 0.0041 default).");
+            builder.AppendLine("# Empirically tuned against src=Dir*Spd readings; dial via GUI slider if your game differs.");
         }
         builder.AppendLine("wind_strength=" + windStrength.ToString("0.###", CultureInfo.InvariantCulture));
         builder.AppendLine();
