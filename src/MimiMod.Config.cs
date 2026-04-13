@@ -44,6 +44,9 @@ public partial class MimiMod
         coffeeBoostKeyName = "F2";
         nearestBallModeKeyName = "F3";
         unlockAllCosmeticsKeyName = "F4";
+        settingsGuiKeyName = "F8";
+        allowOvercharge = false;
+        instaHitEnabled = false;
         actualTrailEnabled = true;
         predictedTrailEnabled = true;
         frozenTrailEnabled = true;
@@ -102,6 +105,15 @@ public partial class MimiMod
                 case "unlock_all_cosmetics_key":
                     unlockAllCosmeticsKeyName = ParseKeyNameOrDefault(value, unlockAllCosmeticsKeyName);
                     break;
+                case "settings_gui_key":
+                    settingsGuiKeyName = ParseKeyNameOrDefault(value, settingsGuiKeyName);
+                    break;
+                case "allow_overcharge":
+                    allowOvercharge = ParseBoolOrDefault(value, allowOvercharge);
+                    break;
+                case "insta_hit_enabled":
+                    instaHitEnabled = ParseBoolOrDefault(value, instaHitEnabled);
+                    break;
                 case "actual_trail_enabled":
                     actualTrailEnabled = ParseBoolOrDefault(value, actualTrailEnabled);
                     break;
@@ -156,35 +168,88 @@ public partial class MimiMod
 
     private string BuildDefaultConfigText()
     {
-        StringBuilder builder = new StringBuilder(512);
-        builder.AppendLine("# Mimi Mod config");
-        builder.AppendLine("# Restart the game after editing this file.");
+        return BuildConfigTextFromCurrentState(true);
+    }
+
+    private string BuildConfigTextFromCurrentState(bool includeComments)
+    {
+        StringBuilder builder = new StringBuilder(768);
+        if (includeComments)
+        {
+            builder.AppendLine("# Mimi Mod config");
+            builder.AppendLine("# Edits via the in-game settings GUI (default F8) persist back here.");
+            builder.AppendLine();
+        }
+        builder.AppendLine("assist_toggle_key=" + assistToggleKeyName);
+        builder.AppendLine("coffee_boost_key=" + coffeeBoostKeyName);
+        builder.AppendLine("nearest_ball_mode_key=" + nearestBallModeKeyName);
+        builder.AppendLine("unlock_all_cosmetics_key=" + unlockAllCosmeticsKeyName);
+        builder.AppendLine("settings_gui_key=" + settingsGuiKeyName);
         builder.AppendLine();
-        builder.AppendLine("assist_toggle_key=F");
-        builder.AppendLine("coffee_boost_key=F2");
-        builder.AppendLine("nearest_ball_mode_key=F3");
-        builder.AppendLine("unlock_all_cosmetics_key=F4");
+        if (includeComments)
+        {
+            builder.AppendLine("# Clamp auto-fire at 100% (false) or allow the game's 115% overcharge (true).");
+            builder.AppendLine("# Overcharged shots are wildly inaccurate, so false is the recommended default.");
+        }
+        builder.AppendLine("allow_overcharge=" + (allowOvercharge ? "true" : "false"));
+        if (includeComments)
+        {
+            builder.AppendLine();
+            builder.AppendLine("# insta_hit_enabled=true  → mod auto-starts the charge the moment you hold LMB (vanilla Mimi).");
+            builder.AppendLine("# insta_hit_enabled=false → you hold LMB and charge manually, the mod only releases at the optimal power.");
+        }
+        builder.AppendLine("insta_hit_enabled=" + (instaHitEnabled ? "true" : "false"));
         builder.AppendLine();
-        builder.AppendLine("actual_trail_enabled=true");
-        builder.AppendLine("actual_trail_start_width=0.22");
-        builder.AppendLine("actual_trail_end_width=0.18");
-        builder.AppendLine("actual_trail_color=#FF9433");
+        builder.AppendLine("actual_trail_enabled=" + (actualTrailEnabled ? "true" : "false"));
+        builder.AppendLine("actual_trail_start_width=" + actualTrailStartWidth.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.AppendLine("actual_trail_end_width=" + actualTrailEndWidth.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.AppendLine("actual_trail_color=" + ColorToHex(actualTrailColor));
         builder.AppendLine();
-        builder.AppendLine("predicted_trail_enabled=true");
-        builder.AppendLine("predicted_trail_start_width=0.18");
-        builder.AppendLine("predicted_trail_end_width=0.14");
-        builder.AppendLine("predicted_trail_color=#39F26E");
+        builder.AppendLine("predicted_trail_enabled=" + (predictedTrailEnabled ? "true" : "false"));
+        builder.AppendLine("predicted_trail_start_width=" + predictedTrailStartWidth.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.AppendLine("predicted_trail_end_width=" + predictedTrailEndWidth.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.AppendLine("predicted_trail_color=" + ColorToHex(predictedTrailColor));
         builder.AppendLine();
-        builder.AppendLine("frozen_trail_enabled=true");
-        builder.AppendLine("frozen_trail_start_width=0.20");
-        builder.AppendLine("frozen_trail_end_width=0.16");
-        builder.AppendLine("frozen_trail_color=#53ACFF");
+        builder.AppendLine("frozen_trail_enabled=" + (frozenTrailEnabled ? "true" : "false"));
+        builder.AppendLine("frozen_trail_start_width=" + frozenTrailStartWidth.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.AppendLine("frozen_trail_end_width=" + frozenTrailEndWidth.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.AppendLine("frozen_trail_color=" + ColorToHex(frozenTrailColor));
         builder.AppendLine();
-        builder.AppendLine("impact_preview_enabled=true");
-        builder.AppendLine("impact_preview_fps=60");
-        builder.AppendLine("impact_preview_width=640");
-        builder.AppendLine("impact_preview_height=360");
+        builder.AppendLine("impact_preview_enabled=" + (impactPreviewEnabled ? "true" : "false"));
+        builder.AppendLine("impact_preview_fps=" + impactPreviewTargetFps.ToString("0.#", CultureInfo.InvariantCulture));
+        builder.AppendLine("impact_preview_width=" + impactPreviewTextureWidth.ToString(CultureInfo.InvariantCulture));
+        builder.AppendLine("impact_preview_height=" + impactPreviewTextureHeight.ToString(CultureInfo.InvariantCulture));
         return builder.ToString();
+    }
+
+    private static string ColorToHex(Color color)
+    {
+        int r = Mathf.Clamp(Mathf.RoundToInt(color.r * 255f), 0, 255);
+        int g = Mathf.Clamp(Mathf.RoundToInt(color.g * 255f), 0, 255);
+        int b = Mathf.Clamp(Mathf.RoundToInt(color.b * 255f), 0, 255);
+        return "#" + r.ToString("X2") + g.ToString("X2") + b.ToString("X2");
+    }
+
+    /// <summary>
+    /// Persist current in-memory config state back to the config file.
+    /// Called by the settings GUI Save button.
+    /// </summary>
+    internal void SaveConfigToFile()
+    {
+        try
+        {
+            string configDirectory = Path.GetDirectoryName(configPath);
+            if (!string.IsNullOrEmpty(configDirectory))
+            {
+                Directory.CreateDirectory(configDirectory);
+            }
+            File.WriteAllText(configPath, BuildConfigTextFromCurrentState(true), Encoding.ASCII);
+            MelonLoader.MelonLogger.Msg($"[MimiMod] Config saved to {configPath}");
+        }
+        catch (Exception ex)
+        {
+            MelonLoader.MelonLogger.Warning($"[MimiMod] Config save failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private string ParseKeyNameOrDefault(string value, string fallbackValue)
@@ -256,10 +321,12 @@ public partial class MimiMod
         coffeeBoostKey = ParseConfiguredKey(coffeeBoostKeyName, Key.F2);
         nearestBallModeKey = ParseConfiguredKey(nearestBallModeKeyName, Key.F3);
         unlockAllCosmeticsKey = ParseConfiguredKey(unlockAllCosmeticsKeyName, Key.F4);
+        settingsGuiKey = ParseConfiguredKey(settingsGuiKeyName, Key.F8);
         assistToggleKeyLabel = FormatKeyLabel(assistToggleKeyName);
         coffeeBoostKeyLabel = FormatKeyLabel(coffeeBoostKeyName);
         nearestBallModeKeyLabel = FormatKeyLabel(nearestBallModeKeyName);
         unlockAllCosmeticsKeyLabel = FormatKeyLabel(unlockAllCosmeticsKeyName);
+        settingsGuiKeyLabel = FormatKeyLabel(settingsGuiKeyName);
     }
 
     private Key ParseConfiguredKey(string configuredKeyName, Key fallbackKey)

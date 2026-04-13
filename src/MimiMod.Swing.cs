@@ -360,24 +360,32 @@ public partial class MimiMod
                 }
             }
 
-            if (!autoChargeSequenceStarted && !isChargingSwing && isAimingSwing && !isSwinging && Time.time >= nextTryStartChargingTime)
+            // E1 graft: insta-hit behavior is now optional. When instaHitEnabled is
+            // FALSE, we skip the auto-start-charging logic and only act as a
+            // release-timer — the player charges manually via LMB, and the mod
+            // releases at the optimal power when the charge reaches idealSwingPower.
+            // When TRUE, we fall through to vanilla Mimi's "start+set+release" path.
+            if (instaHitEnabled)
             {
-                nextTryStartChargingTime = Time.time + tryStartChargingInterval;
-                bool startedCharging;
-                TryStartChargingSwingForAutoRelease(out startedCharging);
-                if (startedCharging)
+                if (!autoChargeSequenceStarted && !isChargingSwing && isAimingSwing && !isSwinging && Time.time >= nextTryStartChargingTime)
                 {
-                    autoChargeSequenceStarted = true;
+                    nextTryStartChargingTime = Time.time + tryStartChargingInterval;
+                    bool startedCharging;
+                    TryStartChargingSwingForAutoRelease(out startedCharging);
+                    if (startedCharging)
+                    {
+                        autoChargeSequenceStarted = true;
+                    }
+                    TryGetCurrentSwingValues(out currentPower, out currentPitch, out isChargingSwing, out isSwinging);
                 }
-                TryGetCurrentSwingValues(out currentPower, out currentPitch, out isChargingSwing, out isSwinging);
-            }
 
-            if (autoChargeSequenceStarted && !isChargingSwing && !isSwinging && Time.time >= nextTryStartChargingTime)
-            {
-                nextTryStartChargingTime = Time.time + tryStartChargingInterval;
-                bool startedCharging;
-                TryStartChargingSwingForAutoRelease(out startedCharging);
-                TryGetCurrentSwingValues(out currentPower, out currentPitch, out isChargingSwing, out isSwinging);
+                if (autoChargeSequenceStarted && !isChargingSwing && !isSwinging && Time.time >= nextTryStartChargingTime)
+                {
+                    nextTryStartChargingTime = Time.time + tryStartChargingInterval;
+                    bool startedCharging;
+                    TryStartChargingSwingForAutoRelease(out startedCharging);
+                    TryGetCurrentSwingValues(out currentPower, out currentPitch, out isChargingSwing, out isSwinging);
+                }
             }
 
             bool chargeActive = isLeftMousePressed && (isChargingSwing || (autoChargeSequenceStarted && currentPower > 0.005f));
@@ -389,6 +397,30 @@ public partial class MimiMod
 
             CalculateIdealSwingParameters(false);
             float targetPower = idealSwingPower > 0.0001f ? Mathf.Clamp(idealSwingPower, 0.05f, 2f) : 1f;
+
+            // Manual-charge mode: don't inject power with TrySetSwingPower (that would
+            // teleport the charge to full and defeat the whole point of letting the
+            // player build it up). Instead, wait until the player's natural charge
+            // reaches targetPower and then call ReleaseSwing directly.
+            if (!instaHitEnabled)
+            {
+                float livePower = currentPower;
+                if (livePower + 0.005f < targetPower)
+                {
+                    // Not yet at optimal — let the player keep charging.
+                    lastObservedSwingPower = livePower;
+                    return;
+                }
+
+                if (ReleaseSwing())
+                {
+                    autoReleaseTriggeredThisCharge = true;
+                    autoChargeSequenceStarted = false;
+                    FreezePredictedTrajectorySnapshot(livePower, currentPitch);
+                }
+                lastObservedSwingPower = livePower;
+                return;
+            }
 
             float appliedPower;
             if (!TrySetSwingPower(targetPower, out appliedPower))

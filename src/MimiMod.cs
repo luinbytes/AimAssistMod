@@ -187,6 +187,12 @@ public partial class MimiMod : MelonMod
     private bool predictedTrailEnabled = true;
     private bool frozenTrailEnabled = true;
     private bool impactPreviewEnabled = true;
+    private bool allowOvercharge;             // default false: clamp auto-fire at 100% instead of the game's 115% overcharge cap
+    private bool instaHitEnabled;             // default false: let the player charge manually, mod only auto-releases at optimal power
+    private bool settingsGuiVisible;
+    private string settingsGuiKeyName = "F8";
+    private string settingsGuiKeyLabel = "F8";
+    private Key settingsGuiKey = Key.F8;
     private float impactPreviewTargetFps;
     private int impactPreviewTextureWidth = 640;
     private int impactPreviewTextureHeight = 360;

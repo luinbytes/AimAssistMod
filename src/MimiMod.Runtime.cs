@@ -113,6 +113,9 @@ public partial class MimiMod
         {
             UnlockAllCosmetics();
         }
+
+        // E1 graft: settings GUI toggle
+        UpdateSettingsGuiHotkey();
     }
 
     private void ToggleAssist()

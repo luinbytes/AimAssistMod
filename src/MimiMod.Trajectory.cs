@@ -989,6 +989,15 @@ public partial class MimiMod
 
             idealSwingPitch = currentPitch;
             float physicsPower = CalculateRequiredPowerForPitch(horizontalDistance, heightDifference, idealSwingPitch);
+
+            // User-facing bug fix: vanilla Mimi happily fires at 115% (the game's
+            // MaxSwingOvercharge) when the hole is out of reach, which is wildly
+            // inaccurate because overcharged shots have extra spread/drift. Clamp
+            // to 100% by default — config key allow_overcharge can re-enable it.
+            if (!allowOvercharge)
+            {
+                physicsPower = Mathf.Min(physicsPower, 1f);
+            }
             idealSwingPower = physicsPower;
         }
         catch
