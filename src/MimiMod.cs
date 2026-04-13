@@ -189,7 +189,7 @@ public partial class MimiMod : MelonMod
     private bool impactPreviewEnabled = true;
     private bool allowOvercharge;             // default false: clamp auto-fire at 100% instead of the game's 115% overcharge cap
     private bool instaHitEnabled;             // default false: let the player charge manually, mod only auto-releases at optimal power
-    private float windStrength = 0.04f;       // multiplier applied to the game's wind vector in the predicted trajectory — tune via settings GUI slider
+    private float windStrength = 0.01f;       // multiplier applied to the game's wind vector in the predicted trajectory — tune via settings GUI slider (0 = no wind)
     private bool settingsGuiVisible;
     private string settingsGuiKeyName = "F8";
     private string settingsGuiKeyLabel = "F8";

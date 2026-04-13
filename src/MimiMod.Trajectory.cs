@@ -289,15 +289,13 @@ public partial class MimiMod
         {
             Vector3 previousPosition = position;
             velocity += gravity * dt;
-            // D2/E2 graft: horizontal wind force as RELATIVE wind drag — the ball
-            // already moving with the wind receives less additional push, while a
-            // ball moving against the wind feels the full force. This matches how
-            // real aerodynamic drag interacts with a moving body and prevents the
-            // prediction from overshooting on fast shots through heavy wind.
-            float relativeWindX = windVector.x - velocity.x;
-            float relativeWindZ = windVector.z - velocity.z;
-            velocity.x += relativeWindX * windCoefficient * dt;
-            velocity.z += relativeWindZ * windCoefficient * dt;
+            // D2 graft: horizontal wind force as constant lateral acceleration.
+            // Relative-wind drag (wind - velocity) was wrong here: at launch the
+            // ball speed is way higher than wind speed, producing a negative
+            // relative wind that DECELERATED the ball instead of pushing it. Real
+            // golf-sim wind is a simple lateral force, tuned via windStrength.
+            velocity.x += windVector.x * windCoefficient * dt;
+            velocity.z += windVector.z * windCoefficient * dt;
             float speedSq = velocity.sqrMagnitude;
             float damping = Mathf.Max(0f, 1f - airDragFactor * speedSq * dt);
             velocity *= damping;

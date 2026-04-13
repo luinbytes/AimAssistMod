@@ -139,13 +139,27 @@ public partial class MimiMod
         // ── Wind tuning section ─────────────────────────────────────────────
         GUILayout.Label("WIND PREDICTION", cachedHeaderStyle);
 
-        GUILayout.Label($"Wind strength: {windStrength:F3}   (0 = ignore wind, dial until prediction matches actual)", cachedLabelStyle);
-        float newWindStrength = GUILayout.HorizontalSlider(windStrength, 0f, 0.25f);
-        if (Mathf.Abs(newWindStrength - windStrength) > 0.0005f)
+        GUILayout.Label($"Wind strength: {windStrength:F4}   (0 = ignore wind, dial until prediction matches actual)", cachedLabelStyle);
+        float newWindStrength = GUILayout.HorizontalSlider(windStrength, 0f, 0.05f);
+        if (Mathf.Abs(newWindStrength - windStrength) > 0.00005f)
         {
-            windStrength = Mathf.Round(newWindStrength * 1000f) / 1000f;
+            windStrength = Mathf.Round(newWindStrength * 10000f) / 10000f;
             nextPredictedPathRefreshTime = 0f;
         }
+
+        // Zero out button for quick "no wind prediction" comparison
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Wind = 0 (disable)", cachedButtonStyle))
+        {
+            windStrength = 0f;
+            nextPredictedPathRefreshTime = 0f;
+        }
+        if (GUILayout.Button("Wind = 0.01 (default)", cachedButtonStyle))
+        {
+            windStrength = 0.01f;
+            nextPredictedPathRefreshTime = 0f;
+        }
+        GUILayout.EndHorizontal();
 
         GUILayout.Label("Live wind: " + GetWindDiagnosticReadout(), cachedLabelStyle);
 

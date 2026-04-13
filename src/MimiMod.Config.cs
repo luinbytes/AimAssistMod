@@ -47,7 +47,7 @@ public partial class MimiMod
         settingsGuiKeyName = "F8";
         allowOvercharge = false;
         instaHitEnabled = false;
-        windStrength = 1.5f;
+        windStrength = 0.01f;
         actualTrailEnabled = true;
         predictedTrailEnabled = true;
         frozenTrailEnabled = true;
@@ -116,7 +116,7 @@ public partial class MimiMod
                     instaHitEnabled = ParseBoolOrDefault(value, instaHitEnabled);
                     break;
                 case "wind_strength":
-                    windStrength = ParseFloatOrDefault(value, windStrength, 0f, 1f);
+                    windStrength = ParseFloatOrDefault(value, windStrength, 0f, 0.5f);
                     break;
                 case "actual_trail_enabled":
                     actualTrailEnabled = ParseBoolOrDefault(value, actualTrailEnabled);
