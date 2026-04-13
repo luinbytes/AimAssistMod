@@ -267,13 +267,22 @@ public partial class MimiMod
         float airDragFactor = GetRuntimeLinearAirDragFactor();
         float pointSpacingSq = predictedPathPointSpacing * predictedPathPointSpacing;
 
-        // D2 graft: read wind once per sim; applied as lateral acceleration in the
-        // integrator below. Cached 0.2s in MimiMod.Wind.cs so repeated trajectory
-        // rebuilds during a single hold don't re-reflect WindManager properties.
-        // windStrength is user-tunable via the settings GUI slider — the effective
-        // wind force is (windVector * windStrength * dt) added per integration step.
+        // D2/E7 graft: wind compensation with cross/along decomposition.
+        //
+        // Flat `wind * coeff * dt` treated every wind direction the same, which
+        // was wrong: headwinds/tailwinds change shot RANGE (drag effect) while
+        // crosswinds change shot WIDTH (small lateral deflection). Physically
+        // these need different coefficient magnitudes — typically drag is ~10x
+        // stronger than lateral drift for the same wind magnitude.
+        //
+        // Decomposition at each integration step:
+        //   ballDir = horizontal ball velocity normalized
+        //   alongWind = dot(wind, ballDir)       // + tailwind, - headwind
+        //   crossWind = wind - ballDir * alongWind  // perpendicular to motion
+        // Apply cross as lateral push (windStrength), along as drag (windDragStrength).
         Vector3 windVector = GetCachedWindVector();
-        float windCoefficient = windStrength;
+        float windCrossCoefficient = windStrength;
+        float windAlongCoefficient = windDragStrength;
 
         outputPoints.Add(shotOrigin);
 
@@ -289,13 +298,37 @@ public partial class MimiMod
         {
             Vector3 previousPosition = position;
             velocity += gravity * dt;
-            // D2 graft: horizontal wind force as constant lateral acceleration.
-            // Relative-wind drag (wind - velocity) was wrong here: at launch the
-            // ball speed is way higher than wind speed, producing a negative
-            // relative wind that DECELERATED the ball instead of pushing it. Real
-            // golf-sim wind is a simple lateral force, tuned via windStrength.
-            velocity.x += windVector.x * windCoefficient * dt;
-            velocity.z += windVector.z * windCoefficient * dt;
+            // E7: decompose horizontal wind into cross (perp to ball motion) and
+            // along (parallel to ball motion) components; apply cross as lateral
+            // push, along as drag. Only do this if the ball has meaningful
+            // horizontal velocity; otherwise fall back to flat wind.
+            {
+                float ballHorizSpeedSq = velocity.x * velocity.x + velocity.z * velocity.z;
+                if (ballHorizSpeedSq > 0.01f)
+                {
+                    float ballHorizSpeed = Mathf.Sqrt(ballHorizSpeedSq);
+                    float ballDirX = velocity.x / ballHorizSpeed;
+                    float ballDirZ = velocity.z / ballHorizSpeed;
+
+                    float alongMag = windVector.x * ballDirX + windVector.z * ballDirZ;
+                    float crossX = windVector.x - ballDirX * alongMag;
+                    float crossZ = windVector.z - ballDirZ * alongMag;
+
+                    // Cross: lateral push (the tuned 0.0041 coefficient lives here)
+                    velocity.x += crossX * windCrossCoefficient * dt;
+                    velocity.z += crossZ * windCrossCoefficient * dt;
+
+                    // Along: drag/push along ball direction. Positive alongMag =
+                    // tailwind accelerates; negative = headwind decelerates.
+                    velocity.x += ballDirX * alongMag * windAlongCoefficient * dt;
+                    velocity.z += ballDirZ * alongMag * windAlongCoefficient * dt;
+                }
+                else
+                {
+                    velocity.x += windVector.x * windCrossCoefficient * dt;
+                    velocity.z += windVector.z * windCrossCoefficient * dt;
+                }
+            }
             float speedSq = velocity.sqrMagnitude;
             float damping = Mathf.Max(0f, 1f - airDragFactor * speedSq * dt);
             velocity *= damping;

@@ -189,7 +189,8 @@ public partial class MimiMod : MelonMod
     private bool impactPreviewEnabled = true;
     private bool allowOvercharge;             // default false: clamp auto-fire at 100% instead of the game's 115% overcharge cap
     private bool instaHitEnabled;             // default false: let the player charge manually, mod only auto-releases at optimal power
-    private float windStrength = 0.0041f;     // empirically tuned against src=Dir*Spd readings; dial via settings GUI slider (0 = no wind)
+    private float windStrength = 0.0041f;     // cross-wind lateral force coefficient — empirically tuned for Dir*Spd source
+    private float windDragStrength = 0.04f;   // along-wind drag coefficient — headwinds/tailwinds need ~10x more effect than crosswind drift
     private bool settingsGuiVisible;
     private string settingsGuiKeyName = "F8";
     private string settingsGuiKeyLabel = "F8";

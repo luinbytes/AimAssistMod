@@ -48,6 +48,7 @@ public partial class MimiMod
         allowOvercharge = false;
         instaHitEnabled = false;
         windStrength = 0.0041f;
+        windDragStrength = 0.04f;
         actualTrailEnabled = true;
         predictedTrailEnabled = true;
         frozenTrailEnabled = true;
@@ -117,6 +118,9 @@ public partial class MimiMod
                     break;
                 case "wind_strength":
                     windStrength = ParseFloatOrDefault(value, windStrength, 0f, 0.5f);
+                    break;
+                case "wind_drag_strength":
+                    windDragStrength = ParseFloatOrDefault(value, windDragStrength, 0f, 1f);
                     break;
                 case "actual_trail_enabled":
                     actualTrailEnabled = ParseBoolOrDefault(value, actualTrailEnabled);
@@ -209,7 +213,15 @@ public partial class MimiMod
             builder.AppendLine("# Wind strength multiplier for the predicted trajectory (0 = ignore wind, 0.0041 default).");
             builder.AppendLine("# Empirically tuned against src=Dir*Spd readings; dial via GUI slider if your game differs.");
         }
-        builder.AppendLine("wind_strength=" + windStrength.ToString("0.###", CultureInfo.InvariantCulture));
+        builder.AppendLine("wind_strength=" + windStrength.ToString("0.####", CultureInfo.InvariantCulture));
+        if (includeComments)
+        {
+            builder.AppendLine();
+            builder.AppendLine("# Along-wind (headwind/tailwind) drag coefficient. Controls how much a");
+            builder.AppendLine("# headwind shortens a shot or tailwind extends it. ~10x stronger than");
+            builder.AppendLine("# wind_strength because drag affects range much more than crosswind drift.");
+        }
+        builder.AppendLine("wind_drag_strength=" + windDragStrength.ToString("0.####", CultureInfo.InvariantCulture));
         builder.AppendLine();
         builder.AppendLine("actual_trail_enabled=" + (actualTrailEnabled ? "true" : "false"));
         builder.AppendLine("actual_trail_start_width=" + actualTrailStartWidth.ToString("0.###", CultureInfo.InvariantCulture));

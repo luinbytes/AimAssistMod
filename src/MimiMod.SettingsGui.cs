@@ -139,7 +139,7 @@ public partial class MimiMod
         // ── Wind tuning section ─────────────────────────────────────────────
         GUILayout.Label("WIND PREDICTION", cachedHeaderStyle);
 
-        GUILayout.Label($"Wind strength: {windStrength:F4}   (0 = ignore wind, dial until prediction matches actual)", cachedLabelStyle);
+        GUILayout.Label($"Cross-wind strength (lateral drift): {windStrength:F4}", cachedLabelStyle);
         float newWindStrength = GUILayout.HorizontalSlider(windStrength, 0f, 0.05f);
         if (Mathf.Abs(newWindStrength - windStrength) > 0.00005f)
         {
@@ -147,16 +147,26 @@ public partial class MimiMod
             nextPredictedPathRefreshTime = 0f;
         }
 
-        // Zero out button for quick "no wind prediction" comparison
+        GUILayout.Label($"Along-wind drag (head/tailwind range): {windDragStrength:F4}", cachedLabelStyle);
+        float newWindDrag = GUILayout.HorizontalSlider(windDragStrength, 0f, 0.2f);
+        if (Mathf.Abs(newWindDrag - windDragStrength) > 0.00005f)
+        {
+            windDragStrength = Mathf.Round(newWindDrag * 10000f) / 10000f;
+            nextPredictedPathRefreshTime = 0f;
+        }
+
+        // Quick-preset buttons
         GUILayout.BeginHorizontal();
         if (GUILayout.Button("Wind = 0 (disable)", cachedButtonStyle))
         {
             windStrength = 0f;
+            windDragStrength = 0f;
             nextPredictedPathRefreshTime = 0f;
         }
-        if (GUILayout.Button("Wind = 0.0041 (default)", cachedButtonStyle))
+        if (GUILayout.Button("Wind defaults", cachedButtonStyle))
         {
             windStrength = 0.0041f;
+            windDragStrength = 0.04f;
             nextPredictedPathRefreshTime = 0f;
         }
         GUILayout.EndHorizontal();
