@@ -183,46 +183,47 @@ public partial class MimiMod
             bool readSucceeded = false;
             string readSource = "-";
 
-            // PREFERRED: CurrentWindDirection * CurrentWindSpeed.
-            // These are the interpolated/display properties the game's own UI uses,
-            // so they're in real m/s units. The raw "Wind" property returned
-            // absurdly-high values (magnitude ~47) suggesting it's an internal
-            // force vector, not a velocity — we use it only as a last resort.
-            if (cachedWindDirectionProperty != null && cachedWindSpeedProperty != null)
-            {
-                object dirValue = cachedWindDirectionProperty.GetValue(cachedWindManagerInstance, null);
-                object speedValue = cachedWindSpeedProperty.GetValue(cachedWindManagerInstance, null);
-                Vector3 dir = dirValue is Vector3 dv ? dv : Vector3.zero;
-                float spd = ConvertToFloat(speedValue);
-                rawWind = (dir.sqrMagnitude > 0.0001f ? dir.normalized : Vector3.zero) * spd;
-                readSucceeded = true;
-                readSource = "Dir*Spd";
-            }
-
-            // Fallback 1: build from NetworkcurrentWindAngle + NetworkcurrentWindSpeed
-            // (angle is degrees; assume 0 = north/+Z and rotates clockwise).
-            if (!readSucceeded && cachedWindNetworkAngleProperty != null && cachedWindNetworkSpeedProperty != null)
-            {
-                object angleValue = cachedWindNetworkAngleProperty.GetValue(cachedWindManagerInstance, null);
-                object speedValue = cachedWindNetworkSpeedProperty.GetValue(cachedWindManagerInstance, null);
-                float angleDeg = ConvertToFloat(angleValue);
-                float spd = ConvertToFloat(speedValue);
-                float rad = angleDeg * Mathf.Deg2Rad;
-                rawWind = new Vector3(Mathf.Sin(rad), 0f, Mathf.Cos(rad)) * spd;
-                readSucceeded = true;
-                readSource = "Net";
-            }
-
-            // Last resort: raw Wind property (probably a force, not velocity).
-            if (!readSucceeded && cachedWindVectorProperty != null)
+            // PREFERRED: WindManager.Wind property — returns the internal
+            // windVelocity field, which is what Hittable.ApplyAirDamping feeds
+            // into its physics. Using it directly eliminates any rounding error
+            // from re-normalizing CurrentWindDirection. Confirmed by decompiling
+            // UpdateWind: windVelocity = currentWindDirection * (float)currentWindSpeed
+            // and get_Wind returns that field unchanged.
+            if (cachedWindVectorProperty != null)
             {
                 object windValue = cachedWindVectorProperty.GetValue(cachedWindManagerInstance, null);
                 if (windValue is Vector3 wv)
                 {
                     rawWind = wv;
                     readSucceeded = true;
-                    readSource = "Wind(raw)";
+                    readSource = "Wind";
                 }
+            }
+
+            // Fallback: CurrentWindDirection * CurrentWindSpeed (may introduce
+            // a tiny magnitude error from re-normalization).
+            if (!readSucceeded && cachedWindDirectionProperty != null && cachedWindSpeedProperty != null)
+            {
+                object dirValue = cachedWindDirectionProperty.GetValue(cachedWindManagerInstance, null);
+                object speedValue = cachedWindSpeedProperty.GetValue(cachedWindManagerInstance, null);
+                Vector3 dir = dirValue is Vector3 dv ? dv : Vector3.zero;
+                float spd = ConvertToFloat(speedValue);
+                rawWind = dir * spd;
+                readSucceeded = true;
+                readSource = "Dir*Spd";
+            }
+
+            // Last resort: build from NetworkcurrentWindAngle + NetworkcurrentWindSpeed.
+            if (!readSucceeded && cachedWindNetworkAngleProperty != null && cachedWindNetworkSpeedProperty != null)
+            {
+                object angleValue = cachedWindNetworkAngleProperty.GetValue(cachedWindManagerInstance, null);
+                object speedValue = cachedWindNetworkSpeedProperty.GetValue(cachedWindManagerInstance, null);
+                float angleDeg = ConvertToFloat(angleValue);
+                float spd = ConvertToFloat(speedValue);
+                Quaternion q = Quaternion.Euler(0f, angleDeg, 0f);
+                rawWind = (q * Vector3.forward) * spd;
+                readSucceeded = true;
+                readSource = "Net";
             }
 
             if (!readSucceeded)
