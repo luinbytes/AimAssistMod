@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>AimAssist</AssemblyName>
+    <RootNamespace>AimAssist</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Suppress duplicate assembly-attribute errors that can appear when
+         referencing pre-built DLLs that already embed these attributes. -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+
+    <!-- Local paths — only used when CI != true -->
+    <GamePath>/mnt/ssd/.games/steamapps/common/Super Battle Golf/Super Battle Golf_Data/Managed</GamePath>
+    <BepInExPath>/home/lu/.config/r2modmanPlus-local/SuperBattleGolf/profiles/Default/BepInEx</BepInExPath>
+  </PropertyGroup>
+
+  <!-- Never compile stubs source — the SDK's **/*.cs glob would pick them up otherwise -->
+  <ItemGroup>
+    <Compile Remove="ci/**/*.cs" />
+  </ItemGroup>
+
+  <!-- ── Local build: reference actual game + BepInEx DLLs ──────────────────── -->
+  <ItemGroup Condition="'$(CI)' != 'true'">
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExPath)/core/BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExPath)/core/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(GamePath)/UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(GamePath)/UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(GamePath)/UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.InputSystem">
+      <HintPath>$(GamePath)/Unity.InputSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>$(GamePath)/UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(GamePath)/UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- ── CI build: BepInEx downloaded by workflow, Unity types from stubs ──── -->
+  <ItemGroup Condition="'$(CI)' == 'true'">
+    <!-- BepInEx.dll — downloaded from GitHub releases by the CI workflow -->
+    <Reference Include="BepInEx">
+      <HintPath>$(MSBuildProjectDirectory)/ci/bepinex/BepInEx/core/BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Unity type stubs — built from ci/stubs/ before this project -->
+    <Reference Include="UnityEngine">
+      <HintPath>$(MSBuildProjectDirectory)/ci/stubs/bin/Release/netstandard2.1/UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

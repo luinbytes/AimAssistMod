@@ -1,0 +1,55 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to upload release assets
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.x'
+
+      # ── Dependencies ────────────────────────────────────────────────────────
+      - name: Download BepInEx 5.4.23.2
+        run: |
+          curl -fsSL -o bepinex.zip \
+            https://github.com/BepInEx/BepInEx/releases/download/v5.4.23.2/BepInEx_win_x64_5.4.23.2.zip
+          unzip -q bepinex.zip -d ci/bepinex/
+          echo "BepInEx DLLs:"
+          ls ci/bepinex/BepInEx/core/
+
+      # ── Build stubs then mod ─────────────────────────────────────────────────
+      - name: Build Unity stubs
+        run: dotnet build ci/stubs/UnityStubs.csproj -c Release --nologo
+        # Outputs UnityEngine.CoreModule.dll — same names BepInEx.dll expects
+
+      - name: Build AimAssist
+        run: dotnet build AimAssistMod.csproj -c Release --nologo /p:CI=true
+
+      # ── Upload build artifact ────────────────────────────────────────────────
+      - name: Upload DLL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AimAssist
+          path: bin/Release/netstandard2.1/AimAssist.dll
+          if-no-files-found: error
+
+      # ── On release: attach DLL to the GitHub release ─────────────────────────
+      - name: Attach DLL to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bin/Release/netstandard2.1/AimAssist.dll
