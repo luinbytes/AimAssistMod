@@ -2,49 +2,43 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
-    <AssemblyName>AimAssist</AssemblyName>
-    <RootNamespace>AimAssist</RootNamespace>
+    <AssemblyName>MimiMod</AssemblyName>
+    <RootNamespace>MimiMod</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- Suppress duplicate assembly-attribute errors that can appear when
-         referencing pre-built DLLs that already embed these attributes. -->
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>CS0436;CS0618;CS0649;CS0067;CS8632;CS0109;CS1701;CS1702;NU1701;NU1702</NoWarn>
 
-    <!-- Local paths — only used when CI != true -->
+    <!-- Game install path — local build references Unity DLLs from here. -->
     <GamePath>/mnt/ssd/.games/steamapps/common/Super Battle Golf/Super Battle Golf_Data/Managed</GamePath>
-    <BepInExPath>/home/lu/.config/r2modmanPlus-local/SuperBattleGolf/profiles/Default/BepInEx</BepInExPath>
   </PropertyGroup>
 
-  <!-- Never compile stubs source — the SDK's **/*.cs glob would pick them up otherwise -->
+  <!-- ── MelonLoader references (checked in under ci/melonloader/) ─────────── -->
   <ItemGroup>
-    <Compile Remove="ci/**/*.cs" />
-  </ItemGroup>
-
-  <!-- ── Local build: reference actual game + BepInEx DLLs ──────────────────── -->
-  <ItemGroup Condition="'$(CI)' != 'true'">
-    <Reference Include="BepInEx">
-      <HintPath>$(BepInExPath)/core/BepInEx.dll</HintPath>
+    <Reference Include="MelonLoader">
+      <HintPath>$(MSBuildProjectDirectory)/ci/melonloader/MelonLoader/net35/MelonLoader.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="0Harmony">
-      <HintPath>$(BepInExPath)/core/0Harmony.dll</HintPath>
+      <HintPath>$(MSBuildProjectDirectory)/ci/melonloader/MelonLoader/net35/0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <Reference Include="UnityEngine">
-      <HintPath>$(GamePath)/UnityEngine.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
+  </ItemGroup>
+
+  <!-- ── Game DLLs referenced from the local Managed folder ───────────────────
+       NOTE: UnityEngine.dll (the base) is deliberately NOT referenced —
+       it holds the same types as the module DLLs without proper type-forwarding,
+       causing CS0433 "exists in both" errors. Reference only module assemblies. -->
+  <ItemGroup>
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>$(GamePath)/UnityEngine.CoreModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
       <HintPath>$(GamePath)/UnityEngine.IMGUIModule.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="Unity.InputSystem">
-      <HintPath>$(GamePath)/Unity.InputSystem.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.PhysicsModule">
@@ -55,18 +49,20 @@
       <HintPath>$(GamePath)/UnityEngine.TextRenderingModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
-  </ItemGroup>
-
-  <!-- ── CI build: BepInEx downloaded by workflow, Unity types from stubs ──── -->
-  <ItemGroup Condition="'$(CI)' == 'true'">
-    <!-- BepInEx.dll — downloaded from GitHub releases by the CI workflow -->
-    <Reference Include="BepInEx">
-      <HintPath>$(MSBuildProjectDirectory)/ci/bepinex/BepInEx/core/BepInEx.dll</HintPath>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(GamePath)/UnityEngine.UI.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <!-- Unity type stubs — built from ci/stubs/ before this project -->
-    <Reference Include="UnityEngine">
-      <HintPath>$(MSBuildProjectDirectory)/ci/stubs/bin/Release/netstandard2.1/UnityEngine.dll</HintPath>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(GamePath)/UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.InputSystem">
+      <HintPath>$(GamePath)/Unity.InputSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(GamePath)/Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

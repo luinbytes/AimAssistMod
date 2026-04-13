@@ -2,9 +2,12 @@
 bin/
 obj/
 
+## Local MelonLoader install (user-provided; not redistributable)
+ci/melonloader/
+
 ## Game DLLs (local refs — not redistributable)
 *.dll
-!package/AimAssist.dll
+!package/*.dll
 
 ## Rider / VS / dotnet
 .idea/
