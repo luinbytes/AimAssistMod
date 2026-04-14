@@ -261,9 +261,11 @@ public partial class MimiMod
 
         Vector3 shotOrigin = golfBall.transform.position + Vector3.up * shotPathHeightOffset;
         Vector3 shotDirection = BuildPredictedShotDirection(shotOrigin, swingPitch);
-        // E9: exact game launch-speed formula (reflected from SwingHittableSettings).
-        // Replaces Mimi's hardcoded piecewise-linear EstimateLaunchSpeedFromPower guess.
-        float launchSpeed = Mathf.Max(0.1f, GetGameAccurateLaunchSpeed(shotPower));
+        // Use Mimi's tuned EstimateLaunchSpeedFromPower — the E9 "exact formula"
+        // replacement caused severe overshoot on easy close shots because the
+        // reflected MaxPowerSwingHitSpeed * currentMul doesn't match Mimi's
+        // empirically-calibrated curve in magnitude. Mimi's curve works.
+        float launchSpeed = Mathf.Max(0.1f, EstimateLaunchSpeedFromPower(shotPower));
         float dt = Mathf.Clamp(Time.fixedDeltaTime, 0.005f, 0.04f);
         Vector3 gravity = Physics.gravity;
         float airDragFactor = GetRuntimeLinearAirDragFactor();
@@ -1136,8 +1138,9 @@ public partial class MimiMod
             float physicsPower;
             if (TrySolveLaunchSpeedWindAware(shotOrigin, currentAimTargetPosition, idealSwingPitch, out float windAwareSpeed))
             {
-                // E9: use exact game inverse (speed / (maxSpeed * matchMultiplier))
-                physicsPower = Mathf.Clamp(GetGameAccuratePowerFromLaunchSpeed(windAwareSpeed), 0.05f, 2f);
+                // Use Mimi's piecewise-linear EstimatePowerFromLaunchSpeed inverse
+                // so the speed↔power conversion is symmetric with the forward sim.
+                physicsPower = Mathf.Clamp(EstimatePowerFromLaunchSpeed(windAwareSpeed), 0.05f, 2f);
             }
             else
             {
