@@ -37,6 +37,8 @@ public partial class SuperHackerGolf
 
     private bool telemetryShotInProgress;
     private bool telemetryImpactRecorded;
+    private bool telemetryBallHasLaunched;
+    private float telemetryMaxY;
     private float telemetryCaptureTime;
     private Vector3 telemetryPredictedLanding;
     private Vector3 telemetryShotOrigin;
@@ -81,9 +83,11 @@ public partial class SuperHackerGolf
 
         telemetryShotInProgress = true;
         telemetryImpactRecorded = false;
+        telemetryBallHasLaunched = false;
         telemetryCaptureTime = Time.time;
         telemetryPredictedLanding = frozenPredictedPathPoints[frozenPredictedPathPoints.Count - 1];
         telemetryShotOrigin = golfBall.transform.position;
+        telemetryMaxY = telemetryShotOrigin.y;
         telemetryHolePosition = holePosition;
         telemetryWindAtRelease = GetCachedWindVector();
         telemetryBallWindFactorAtRelease = GetBallWindFactor();
@@ -126,15 +130,58 @@ public partial class SuperHackerGolf
             return;
         }
 
-        // Record first ground impact: matches SimulateBallLandingPoint's termination
-        // condition (ball crosses target height going down).
-        if (!telemetryImpactRecorded &&
-            elapsed > telemetryMinShotTime &&
-            ballVel.y < 0f &&
-            ballPos.y <= telemetryHolePosition.y + telemetryBallImpactEpsilon)
+        // Gate: wait for the ball to actually launch before considering impact.
+        // This filters out the "ball is below targetY from frame zero" bug on
+        // downhill shots AND handles the no-wind case where the ball might take
+        // a frame or two to start moving after FreezePredictedTrajectorySnapshot.
+        if (!telemetryBallHasLaunched)
         {
-            telemetryActualImpact = ballPos;
-            telemetryImpactRecorded = true;
+            if ((ballPos - telemetryShotOrigin).sqrMagnitude > 0.25f) // > 0.5m
+            {
+                telemetryBallHasLaunched = true;
+            }
+            else if (elapsed > 0.5f)
+            {
+                // Ball never launched — maybe FreezePredictedTrajectorySnapshot
+                // was called without a real fire (e.g. manual swing rejected by
+                // the game). Abort this telemetry capture quietly.
+                telemetryShotInProgress = false;
+                return;
+            }
+            else
+            {
+                return;
+            }
+        }
+
+        // Track apex so we know we're in the descent phase.
+        if (ballPos.y > telemetryMaxY)
+        {
+            telemetryMaxY = ballPos.y;
+        }
+
+        // Record first ground impact. Uses the PREDICTED impact Y (not the raw
+        // hole Y) as the detection threshold so uphill / downhill shots and
+        // elevated greens are handled naturally — the predicted landing's Y
+        // already reflects the terrain our forward sim hit. Works identically
+        // for wind and no-wind shots.
+        if (!telemetryImpactRecorded && ballVel.y < 0f)
+        {
+            // Require the ball to have risen at least 0.3m above origin (i.e. a
+            // real airborne shot, not a putt sliding along the ground) OR the
+            // predicted landing is more than 0.5m below origin (downhill).
+            bool reallyAirborne = (telemetryMaxY - telemetryShotOrigin.y) > 0.3f;
+            bool downhillShot = telemetryPredictedLanding.y < telemetryShotOrigin.y - 0.5f;
+            if (reallyAirborne || downhillShot)
+            {
+                // Impact when ball crosses predicted landing Y (plus a small
+                // epsilon so we catch it at the threshold, not one frame late).
+                if (ballPos.y <= telemetryPredictedLanding.y + telemetryBallImpactEpsilon)
+                {
+                    telemetryActualImpact = ballPos;
+                    telemetryImpactRecorded = true;
+                }
+            }
         }
 
         // Wait for ball to rest before logging the final result.
@@ -157,12 +204,18 @@ public partial class SuperHackerGolf
             0f,
             telemetryHolePosition.z - telemetryShotOrigin.z).magnitude;
 
+        string windLabel = windMag < 0.5f
+            ? "wind=CALM"
+            : $"wind=({telemetryWindAtRelease.x:F1},{telemetryWindAtRelease.z:F1}) |{windMag:F1}|";
+
+        string impactLabel = telemetryImpactRecorded ? "impactΔ" : "restΔ";
         string summary = $"#{telemetryShotCounter} dist={shotDistance:F1}m " +
                          $"pwr={telemetryAppliedPower * 100f:F0}% " +
                          $"pitch={telemetryShotPitch:F1}° " +
-                         $"wind=({telemetryWindAtRelease.x:F1},{telemetryWindAtRelease.z:F1}) |{windMag:F1}| " +
-                         $"impactΔ=({impactDelta.x:+0.00;-0.00},{impactDelta.z:+0.00;-0.00}) |{impactDelta.magnitude:F2}|m " +
-                         $"vsHole=|{vsHole.magnitude:F2}|m";
+                         $"{windLabel} " +
+                         $"{impactLabel}=({impactDelta.x:+0.00;-0.00},{impactDelta.z:+0.00;-0.00}) |{impactDelta.magnitude:F2}|m " +
+                         $"vsHole=|{vsHole.magnitude:F2}|m " +
+                         $"flight={elapsed:F1}s";
 
         MelonLogger.Msg("[SuperHackerGolf] Telemetry " + summary);
 
@@ -199,11 +252,15 @@ public partial class SuperHackerGolf
 
             if (!telemetryCsvHeaderWritten && !File.Exists(telemetryCsvPath))
             {
-                sb.AppendLine("shot,shot_distance_m,flight_s,wind_x,wind_z,wind_mag,wind_factor,cross_wind_factor,air_drag,swing_power_mul,power_pct,pitch_deg,origin_x,origin_y,origin_z,hole_x,hole_y,hole_z,predict_x,predict_y,predict_z,impact_x,impact_y,impact_z,final_x,final_y,final_z,impact_delta_x,impact_delta_y,impact_delta_z,impact_delta_mag,rest_delta_mag,vs_hole_mag");
+                sb.AppendLine("shot,wind_state,had_airborne_impact,shot_distance_m,flight_s,wind_x,wind_z,wind_mag,wind_factor,cross_wind_factor,air_drag,swing_power_mul,power_pct,pitch_deg,origin_x,origin_y,origin_z,hole_x,hole_y,hole_z,predict_x,predict_y,predict_z,impact_x,impact_y,impact_z,final_x,final_y,final_z,impact_delta_x,impact_delta_y,impact_delta_z,impact_delta_mag,rest_delta_mag,vs_hole_mag");
                 telemetryCsvHeaderWritten = true;
             }
 
+            string windState = telemetryWindAtRelease.magnitude < 0.5f ? "calm" : "windy";
+
             sb.Append(telemetryShotCounter.ToString(ic)).Append(',')
+              .Append(windState).Append(',')
+              .Append(telemetryImpactRecorded ? "1" : "0").Append(',')
               .Append(shotDistance.ToString("0.###", ic)).Append(',')
               .Append(flightTime.ToString("0.###", ic)).Append(',')
               .Append(telemetryWindAtRelease.x.ToString("0.###", ic)).Append(',')
