@@ -38,6 +38,7 @@ public partial class SuperHackerGolf
     private bool telemetryShotInProgress;
     private bool telemetryImpactRecorded;
     private bool telemetryBallHasLaunched;
+    private bool telemetryIsRocketDriverAtRelease;
     private float telemetryMaxY;
     private float telemetryCaptureTime;
     private float telemetryPrevVelY;
@@ -116,6 +117,7 @@ public partial class SuperHackerGolf
         telemetryShotPitch = shotPitch;
         telemetrySwingPowerMultiplierAtRelease = 1f;
         TryGetServerSwingPowerMultiplier(out telemetrySwingPowerMultiplierAtRelease);
+        telemetryIsRocketDriverAtRelease = IsLocalPlayerUsingRocketDriver();
     }
 
     /// <summary>
@@ -233,13 +235,10 @@ public partial class SuperHackerGolf
             outOfBounds = true;
         }
 
-        // Heuristic flag for the super club / speed boost powerup: game applies
-        // a higher swing-power multiplier so shots at "100%" go 1.5-2x farther
-        // than the forward sim predicts. Mimi reads the current multiplier via
-        // TryGetServerSwingPowerMultiplier, but if a temporary buff is applied
-        // after our release capture, we might see an anomalous mul here.
-        bool likelySuperClub = telemetryAppliedPower > 1.00f ||
-                                telemetrySwingPowerMultiplierAtRelease > 1.10f;
+        // E11: rocket driver (super club) flag — captured at shot release via
+        // reflection on PlayerInfo.Inventory.GetEffectivelyEquippedItem. No
+        // more >100% heuristic; this is the actual game truth.
+        bool likelySuperClub = telemetryIsRocketDriverAtRelease;
 
         Vector3 actualImpact = telemetryImpactRecorded ? telemetryActualImpact : finalRest;
         Vector3 impactDelta = actualImpact - telemetryPredictedLanding;

@@ -430,6 +430,9 @@ public partial class SuperHackerGolf
                         object v = cachedMaxPowerPuttHitSpeedProperty.GetValue(swingSettings, null);
                         if (v is float f) cachedBallMaxPuttHitSpeed = f;
                     }
+
+                    // Read rocket driver hit speed range off the same settings.
+                    ReadBallRocketDriverSpeeds(swingSettings);
                 }
             }
 

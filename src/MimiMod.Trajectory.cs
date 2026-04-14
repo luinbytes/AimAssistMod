@@ -261,36 +261,30 @@ public partial class SuperHackerGolf
 
         Vector3 shotOrigin = golfBall.transform.position + Vector3.up * shotPathHeightOffset;
         Vector3 shotDirection = BuildPredictedShotDirection(shotOrigin, swingPitch);
-        // Use Mimi's tuned EstimateLaunchSpeedFromPower — the E9 "exact formula"
-        // replacement caused severe overshoot on easy close shots because the
-        // reflected MaxPowerSwingHitSpeed * currentMul doesn't match Mimi's
-        // empirically-calibrated curve in magnitude. Mimi's curve works.
-        float launchSpeed = Mathf.Max(0.1f, EstimateLaunchSpeedFromPower(shotPower));
-        float dt = Mathf.Clamp(Time.fixedDeltaTime, 0.005f, 0.04f);
+
+        // E11: EXACT game launch-speed formula from decompiled GetSwingHitSpeed.
+        // Rocket driver (super club) uses a separate BMath.Remap branch with
+        // per-ball min/max rocket hit speeds. Putt vs full swing also has its
+        // own max speed constant. MatchSetupRules.GetValue(Rule.SwingPower) is
+        // applied inside GetGameExactLaunchSpeed.
+        bool isRocketDriver = IsLocalPlayerUsingRocketDriver();
+        bool isPutt = swingPitch <= 0f;
+        float launchSpeed = Mathf.Max(0.1f, GetGameExactLaunchSpeed(shotPower, isPutt, isRocketDriver));
+
+        float dt = Time.fixedDeltaTime;  // match game fixed step exactly (no clamping)
         Vector3 gravity = Physics.gravity;
-        float airDragFactor = GetRuntimeLinearAirDragFactor();
+        // E11: rocket driver swings use a different air drag coefficient.
+        float airDragFactor = GetGameExactAirDragFactor(isRocketDriver);
         float pointSpacingSq = predictedPathPointSpacing * predictedPathPointSpacing;
 
         // E8 graft: EXACT reimplementation of Hittable.ApplyAirDamping.
-        //
-        // Decompiled from GameAssembly.dll, the real formula is:
-        //   effectiveWind = Vector3.Project(wind, velocity) * WindFactor
-        //                 + (wind - Vector3.Project(wind, velocity)) * CrossWindFactor
-        //   relVel = velocity - effectiveWind
-        //   dragDelta = max(0, airDragFactor * |relVel|² * dt)
-        //   velocity -= relVel * dragDelta
-        //
-        // Drag is quadratic in the RELATIVE-to-air velocity, and wind is folded
-        // into the drag calculation — it isn't a separate force. This replaces
-        // the homebrew `velocity += wind * coeff * dt` + Mimi's own `damping`
-        // line entirely, because the game combines them in one step.
-        //
-        // WindFactor / CrossWindFactor come from WindHittableSettings on the ball
-        // (read via RefreshBallWindFactors) — no more guessing coefficients.
         RefreshBallWindFactors();
+        RefreshBallPhysicsMaterial();
         Vector3 windVector = GetCachedWindVector();
         float ballWindFactor = GetBallWindFactor();
         float ballCrossWindFactor = GetBallCrossWindFactor();
+        float ballBounciness = GetBallBounciness();
+        float ballDynamicFriction = GetBallDynamicFriction();
 
         outputPoints.Add(shotOrigin);
 
@@ -300,8 +294,10 @@ public partial class SuperHackerGolf
         bool trackImpactPreview = ReferenceEquals(outputPoints, predictedPathPoints) || ReferenceEquals(outputPoints, frozenPredictedPathPoints);
         bool impactResolved = false;
         Vector3 impactPoint = Vector3.zero;
+        Vector3 impactNormal = Vector3.up;
         Vector3 impactApproachDirection = GetFallbackPreviewDirection();
 
+        // ── Phase 1: airborne flight ──────────────────────────────────────────
         for (int i = 0; i < predictedPathMaxSteps && elapsed <= predictedPathMaxTime; i++)
         {
             Vector3 previousPosition = position;
@@ -324,18 +320,23 @@ public partial class SuperHackerGolf
 
             position += velocity * dt;
 
-            if (trackImpactPreview && !impactResolved)
+            if (!impactResolved)
             {
                 RaycastHit impactHit;
                 if (TryFindWorldImpactAlongSegment(previousPosition, position, out impactHit))
                 {
                     impactResolved = true;
                     impactPoint = impactHit.point;
+                    impactNormal = impactHit.normal.sqrMagnitude > 0.0001f ? impactHit.normal : Vector3.up;
                     Vector3 segmentDirection = position - previousPosition;
                     if (segmentDirection.sqrMagnitude >= 0.0001f)
                     {
                         impactApproachDirection = segmentDirection.normalized;
                     }
+                    // Snap position to impact point so the trajectory line ends exactly
+                    // where the ball actually hits, and phase 2 starts from the right spot.
+                    position = impactPoint;
+                    break;
                 }
             }
 
@@ -355,6 +356,177 @@ public partial class SuperHackerGolf
             }
 
             elapsed += dt;
+        }
+
+        // ── Phase 2: bounces + roll ───────────────────────────────────────────
+        //
+        // Reconstructed from GolfBall.ApplyGroundDamping + g__GetDamping|114_1
+        // and augmented with a Unity-style bounce reflection based on the ball's
+        // real PhysicsMaterial bounciness + dynamic friction.
+        //
+        // On each ground contact:
+        //   v_normal  = dot(v, n) * n          // component pushing into ground
+        //   v_tangent = v - v_normal            // sliding component
+        //   v_out     = v_tangent * (1 - df) - v_normal * bounciness
+        //
+        // If |v_out.y| is still large, the ball bounces back into the air and we
+        // continue simulating with air drag + wind until the next ground contact.
+        // Once the incoming normal velocity drops below a threshold the ball is
+        // "grounded" and we switch to the ground damping formula with per-frame
+        // raycasts to follow the terrain contour.
+
+        if (impactResolved)
+        {
+            outputPoints.Add(position);
+
+            // ── Bounce chain ──────────────────────────────────────────────────
+            // Keep bouncing as long as the incoming normal speed is large enough
+            // to leave the ground and we haven't exhausted the time/step budget.
+            const float BOUNCE_LIFTOFF_SPEED = 1.5f;  // m/s along +normal after bounce
+            const int MAX_BOUNCES = 8;
+
+            Vector3 currentGroundNormal = impactNormal;
+            if (currentGroundNormal.y < 0.0001f) currentGroundNormal = Vector3.up;
+
+            int bounces = 0;
+            bool grounded = false;
+
+            while (bounces < MAX_BOUNCES)
+            {
+                bounces++;
+                float normalDot = Vector3.Dot(velocity, currentGroundNormal);
+
+                // Reflect + scale the normal component; apply dynamic friction to tangent.
+                Vector3 vNormal = currentGroundNormal * normalDot;
+                Vector3 vTangent = velocity - vNormal;
+
+                Vector3 vOut = vTangent * Mathf.Clamp01(1f - ballDynamicFriction)
+                             - vNormal * ballBounciness;
+
+                float outNormalSpeed = Vector3.Dot(vOut, currentGroundNormal);
+
+                // If the bounce wouldn't leave the ground, commit to rolling.
+                if (outNormalSpeed < BOUNCE_LIFTOFF_SPEED)
+                {
+                    // Kill the normal component and go to roll phase with the tangent.
+                    velocity = vTangent * Mathf.Clamp01(1f - ballDynamicFriction);
+                    grounded = true;
+                    break;
+                }
+
+                velocity = vOut;
+
+                // Fly until the next impact. Copy of the phase-1 loop body so
+                // we can apply air drag + wind through the bounce arc.
+                Vector3 bounceStart = position;
+                bool nextImpact = false;
+                for (int j = 0; j < predictedPathMaxSteps && elapsed < predictedPathMaxTime; j++)
+                {
+                    Vector3 prev = position;
+                    velocity += gravity * dt;
+
+                    Vector3 eWind = Vector3.zero;
+                    if (windVector.sqrMagnitude > 0.0001f && velocity.sqrMagnitude > 0.0001f)
+                    {
+                        Vector3 wa = Vector3.Project(windVector, velocity);
+                        Vector3 wc = windVector - wa;
+                        eWind = wa * ballWindFactor + wc * ballCrossWindFactor;
+                    }
+                    Vector3 rv = velocity - eWind;
+                    float rvSq = rv.sqrMagnitude;
+                    float dd = Mathf.Max(0f, airDragFactor * rvSq * dt);
+                    velocity -= rv * dd;
+                    position += velocity * dt;
+
+                    RaycastHit hit;
+                    if (TryFindWorldImpactAlongSegment(prev, position, out hit))
+                    {
+                        position = hit.point;
+                        currentGroundNormal = hit.normal.sqrMagnitude > 0.0001f ? hit.normal : Vector3.up;
+                        nextImpact = true;
+
+                        if ((outputPoints[outputPoints.Count - 1] - position).sqrMagnitude >= pointSpacingSq * 0.25f)
+                        {
+                            outputPoints.Add(position);
+                        }
+                        break;
+                    }
+
+                    if ((outputPoints[outputPoints.Count - 1] - position).sqrMagnitude >= pointSpacingSq)
+                    {
+                        outputPoints.Add(position);
+                    }
+
+                    if (position.y < -200f) break;
+                    elapsed += dt;
+                }
+
+                if (!nextImpact)
+                {
+                    // Ball left the ground and didn't re-contact before time/steps ran out.
+                    grounded = false;
+                    break;
+                }
+            }
+
+            // ── Roll phase ────────────────────────────────────────────────────
+            if (grounded)
+            {
+                float rollingDownhillTime = 0f;
+                float rollElapsed = 0f;
+                float maxRollTime = predictedPathMaxTime;
+                Vector3 rollNormal = currentGroundNormal;
+
+                for (int i = 0; i < predictedPathMaxSteps && rollElapsed < maxRollTime; i++)
+                {
+                    float groundPitchDeg = Vector3.Angle(Vector3.up, rollNormal);
+
+                    Vector3 velAlongGround = Vector3.ProjectOnPlane(velocity, rollNormal);
+                    float speedAlong = velAlongGround.magnitude;
+
+                    if (speedAlong < 0.05f)
+                    {
+                        break;
+                    }
+
+                    float fullStopFactor;
+                    float damping = ComputeGroundDamping(groundPitchDeg, speedAlong, rollingDownhillTime, out fullStopFactor);
+
+                    float fac = Mathf.Max(0f, 1f - damping * dt);
+                    velocity = velocity - velAlongGround + velAlongGround * fac;
+
+                    position += velocity * dt;
+
+                    // Per-frame ground raycast to follow terrain curvature and
+                    // update the ground normal as the ball rolls over slopes.
+                    Vector3 probeOrigin = position + Vector3.up * 0.5f;
+                    RaycastHit groundHit;
+                    if (Physics.Raycast(probeOrigin, Vector3.down, out groundHit, 2f))
+                    {
+                        position = groundHit.point;
+                        rollNormal = groundHit.normal.sqrMagnitude > 0.0001f ? groundHit.normal : Vector3.up;
+                    }
+
+                    if ((outputPoints[outputPoints.Count - 1] - position).sqrMagnitude >= pointSpacingSq * 0.25f)
+                    {
+                        outputPoints.Add(position);
+                    }
+
+                    if (velocity.y < -0.005f)
+                    {
+                        rollingDownhillTime += dt;
+                    }
+                    else
+                    {
+                        rollingDownhillTime = 0f;
+                    }
+
+                    rollElapsed += dt;
+                    elapsed += dt;
+                }
+            }
+
+            outputPoints.Add(position);
         }
 
         if (trackImpactPreview)
@@ -1014,7 +1186,9 @@ public partial class SuperHackerGolf
         Vector3 wind = GetCachedWindVector();
         float ballWF = GetBallWindFactor();
         float ballCWF = GetBallCrossWindFactor();
-        float airDrag = GetRuntimeLinearAirDragFactor();
+        // E11: rocket driver swings use a different air drag coefficient.
+        bool solverIsRocketDriver = IsLocalPlayerUsingRocketDriver();
+        float airDrag = GetGameExactAirDragFactor(solverIsRocketDriver);
 
         float bestSpeed = 100f;
         float bestDistSq = float.MaxValue;
