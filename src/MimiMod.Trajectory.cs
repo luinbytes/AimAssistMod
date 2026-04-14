@@ -380,10 +380,15 @@ public partial class SuperHackerGolf
             outputPoints.Add(position);
 
             // ── Bounce chain ──────────────────────────────────────────────────
-            // Keep bouncing as long as the incoming normal speed is large enough
-            // to leave the ground and we haven't exhausted the time/step budget.
-            const float BOUNCE_LIFTOFF_SPEED = 1.5f;  // m/s along +normal after bounce
-            const int MAX_BOUNCES = 8;
+            // Unity's PhysicsMaterial applies bounciness as a normal-velocity
+            // coefficient of restitution, but dynamicFriction is applied during
+            // CONTACT DURATION (not at the bounce instant). For an instantaneous
+            // bounce model we preserve the tangent component fully and only
+            // reflect/scale the normal component. This matches what the user
+            // observed: balls roll 15-30m after a moderate-power shot because
+            // they keep most of their tangent velocity through each bounce.
+            const float BOUNCE_LIFTOFF_SPEED = 0.5f;  // m/s along +normal after bounce
+            const int MAX_BOUNCES = 12;
 
             Vector3 currentGroundNormal = impactNormal;
             if (currentGroundNormal.y < 0.0001f) currentGroundNormal = Vector3.up;
@@ -396,20 +401,22 @@ public partial class SuperHackerGolf
                 bounces++;
                 float normalDot = Vector3.Dot(velocity, currentGroundNormal);
 
-                // Reflect + scale the normal component; apply dynamic friction to tangent.
+                // Decompose incoming velocity. Tangent stays; normal reflects.
                 Vector3 vNormal = currentGroundNormal * normalDot;
                 Vector3 vTangent = velocity - vNormal;
 
-                Vector3 vOut = vTangent * Mathf.Clamp01(1f - ballDynamicFriction)
-                             - vNormal * ballBounciness;
+                // Unity-style reflection: v_out = v_tangent - v_normal * bounciness
+                // (bounciness is the coefficient of restitution, clamped 0..1)
+                Vector3 vOut = vTangent - vNormal * ballBounciness;
 
                 float outNormalSpeed = Vector3.Dot(vOut, currentGroundNormal);
 
                 // If the bounce wouldn't leave the ground, commit to rolling.
                 if (outNormalSpeed < BOUNCE_LIFTOFF_SPEED)
                 {
-                    // Kill the normal component and go to roll phase with the tangent.
-                    velocity = vTangent * Mathf.Clamp01(1f - ballDynamicFriction);
+                    // Keep tangent velocity intact; the ground damping formula
+                    // (friction-scaled) handles deceleration in the roll phase.
+                    velocity = vTangent;
                     grounded = true;
                     break;
                 }
@@ -1154,6 +1161,64 @@ public partial class SuperHackerGolf
         return true;
     }
 
+    // E11 single-pass crosswind aim compensation.
+    //
+    // Runs the 1D wind-aware solver against the raw hole target, simulates the
+    // resulting shot to see where it actually lands under wind, then offsets
+    // the aim by the observed miss vector and re-runs the 1D solver ONCE.
+    // No loop. No accumulation. If the first pass already lands within 0.5m
+    // of the hole, skip compensation entirely.
+    private bool TrySolveAimAndSpeedSinglePass(Vector3 shotOrigin, Vector3 holePos, float swingPitch,
+                                                out Vector3 compensatedAim, out float solvedSpeed)
+    {
+        compensatedAim = holePos;
+        solvedSpeed = 0f;
+
+        // Pass 1: find best speed for hole target (no aim offset).
+        if (!TrySolveLaunchSpeedWindAware(shotOrigin, holePos, swingPitch, out float firstSpeed))
+        {
+            return false;
+        }
+        solvedSpeed = firstSpeed;
+
+        // Forward-sim the shot to observe actual landing under wind.
+        Vector3 horizToHole = holePos - shotOrigin;
+        horizToHole.y = 0f;
+        if (horizToHole.sqrMagnitude < 0.0001f) return true;
+        Vector3 aimDirHoriz = horizToHole.normalized;
+        float pitchRad = swingPitch * Mathf.Deg2Rad;
+        Vector3 launchDir = aimDirHoriz * Mathf.Cos(pitchRad) + Vector3.up * Mathf.Sin(pitchRad);
+
+        Vector3 wind = GetCachedWindVector();
+        float ballWF = GetBallWindFactor();
+        float ballCWF = GetBallCrossWindFactor();
+        bool isRocketDriver = IsLocalPlayerUsingRocketDriver();
+        float airDrag = GetGameExactAirDragFactor(isRocketDriver);
+
+        Vector3 landing = SimulateBallLandingPoint(shotOrigin, launchDir, firstSpeed,
+                                                   wind, ballWF, ballCWF, airDrag, holePos.y);
+
+        Vector3 miss = holePos - landing;
+        miss.y = 0f;
+        if (miss.sqrMagnitude < 0.25f)
+        {
+            // First pass already lands within 0.5m — no compensation needed.
+            return true;
+        }
+
+        // Single correction: aim = hole + miss (offsets aim to compensate).
+        compensatedAim = holePos + miss;
+
+        // Pass 2: find best speed for the compensated aim target.
+        if (!TrySolveLaunchSpeedWindAware(shotOrigin, compensatedAim, swingPitch, out float secondSpeed))
+        {
+            // Pass 2 failed — fall back to the first speed but keep the offset aim.
+            return true;
+        }
+        solvedSpeed = secondSpeed;
+        return true;
+    }
+
     // E8b: wind-aware launch-speed solver.
     //
     // Forward-sims the ball using the exact Hittable.ApplyAirDamping physics
@@ -1230,11 +1295,19 @@ public partial class SuperHackerGolf
 
     // Forward-sim a ball launch until it descends through targetGroundY. Matches
     // the exact physics of BuildPredictedTrajectoryPoints (E8 formula).
+    // Forward-sim helper used by the 1D solver and single-pass 2D compensator.
+    // Uses the EXACT decompiled physics:
+    //   - dt = Time.fixedDeltaTime (no clamping — matches game physics step)
+    //   - gravity = Physics.gravity
+    //   - wind application via Hittable.ApplyAirDamping formula (E8)
+    //   - drag coefficient selected by rocket driver state
+    //   - ball WindFactor / CrossWindFactor read from HittableSettings.Wind
+    // Callers pass the per-shot factors as parameters so this method stays pure.
     private Vector3 SimulateBallLandingPoint(Vector3 shotOrigin, Vector3 launchDir, float launchSpeed,
                                               Vector3 windVector, float ballWF, float ballCWF, float airDragFactor,
                                               float targetGroundY)
     {
-        float dt = Mathf.Clamp(Time.fixedDeltaTime, 0.005f, 0.04f);
+        float dt = Time.fixedDeltaTime;
         Vector3 gravity = Physics.gravity;
         Vector3 position = shotOrigin;
         Vector3 velocity = launchDir * launchSpeed;
@@ -1369,23 +1442,27 @@ public partial class SuperHackerGolf
 
             idealSwingPitch = currentPitch;
 
-            // E10 2D aim compensation DISABLED — it was over-correcting for the
-            // 1D solver's quantization residual (0.5 m/s refine = 2-3m range
-            // error per iter) and accumulating drift. Telemetry shot 21 showed
-            // predict 5.4m past hole when the ball followed the predicted path
-            // exactly. The 1D solver alone gets within 1-2m on normal shots.
+            // E11: single-pass crosswind aim compensation.
             //
-            // Crosswind drift that the 2D solver was meant to compensate is
-            // small in practice because CrossWindFactor=0.05 caps perpendicular
-            // drift at ~5m on long windy shots. The player can visually adjust.
-            //
-            // Leaving TrySolveWindCompensatedAim in the source for a future
-            // re-enable once the 1D solver has finer precision.
+            // Previous E10 attempt iterated up to 6 times, accumulating the 1D
+            // solver's quantization residual (0.5 m/s refine ≈ 2-3m range error)
+            // and drifting aim 5-10m off the hole. Fixed by using ONE correction
+            // pass: run the 1D solver against the raw hole target, simulate at
+            // that speed to see the actual landing under wind, then offset the
+            // aim by the resulting miss vector and re-run the 1D solver once.
+            // No loop, no accumulation.
             RefreshBallWindFactors();
+            RefreshBallPhysicsMaterial();
             Vector3 rawHoleTarget = currentAimTargetPosition;
             float physicsPower;
-            if (TrySolveLaunchSpeedWindAware(shotOrigin, rawHoleTarget, idealSwingPitch, out float windAwareSpeed))
+            if (TrySolveAimAndSpeedSinglePass(shotOrigin, rawHoleTarget, idealSwingPitch,
+                                              out Vector3 compensatedAim, out float windAwareSpeed))
             {
+                currentAimTargetPosition = compensatedAim;
+                toTarget = currentAimTargetPosition - shotOrigin;
+                horizontalToTarget = new Vector3(toTarget.x, 0f, toTarget.z);
+                horizontalDistance = horizontalToTarget.magnitude;
+                heightDifference = toTarget.y;
                 physicsPower = Mathf.Clamp(EstimatePowerFromLaunchSpeed(windAwareSpeed), 0.05f, 2f);
             }
             else

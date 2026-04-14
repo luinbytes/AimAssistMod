@@ -69,6 +69,70 @@ public partial class SuperHackerGolf
     private float cachedBallMinRocketPuttHitSpeed = 60f;
     private float cachedBallMaxRocketPuttHitSpeed = 110f;
 
+    // GameManager.LayerSettings.BallGroundableMask — the layer mask the game's
+    // IsGrounded SphereCast uses. Filters out trees, walls, decorations, etc.
+    // Our forward sim uses this instead of Physics.DefaultRaycastLayers so we
+    // don't terminate early on mid-flight tree clips.
+    private int cachedBallGroundableMask = ~0; // default = everything until we reflect
+    private bool ballGroundableMaskResolved;
+
+    internal int GetBallGroundableMask()
+    {
+        if (!ballGroundableMaskResolved)
+        {
+            ballGroundableMaskResolved = true;
+            try
+            {
+                Type gmType = null;
+                Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+                for (int i = 0; i < assemblies.Length; i++)
+                {
+                    gmType = assemblies[i].GetType("GameManager");
+                    if (gmType != null) break;
+                }
+                if (gmType != null)
+                {
+                    object layerSettings = ReadStaticMember(gmType, "LayerSettings");
+                    if (layerSettings != null)
+                    {
+                        // BallGroundableMask is a LayerMask field — its .value is an int.
+                        Type lsType = layerSettings.GetType();
+                        PropertyInfo maskProp = lsType.GetProperty("BallGroundableMask",
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        object maskObj = null;
+                        if (maskProp != null)
+                        {
+                            maskObj = maskProp.GetValue(layerSettings, null);
+                        }
+                        else
+                        {
+                            FieldInfo maskField = lsType.GetField("BallGroundableMask",
+                                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            if (maskField != null)
+                            {
+                                maskObj = maskField.GetValue(layerSettings);
+                            }
+                        }
+                        if (maskObj is LayerMask lm)
+                        {
+                            cachedBallGroundableMask = lm.value;
+                        }
+                        else if (maskObj is int iv)
+                        {
+                            cachedBallGroundableMask = iv;
+                        }
+                        MelonLogger.Msg($"[SuperHackerGolf] BallGroundableMask resolved: 0x{cachedBallGroundableMask:X8}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[SuperHackerGolf] BallGroundableMask resolution failed: {ex.GetType().Name}");
+            }
+        }
+        return cachedBallGroundableMask;
+    }
+
     // Ball's Unity PhysicsMaterial — bounce + friction coefficients.
     // Read directly from the ball's SphereCollider.sharedMaterial. Since
     // GolfBall.OnCollisionEnter doesn't apply bounce in managed code, all
