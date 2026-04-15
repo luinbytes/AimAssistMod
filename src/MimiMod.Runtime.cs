@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -12,44 +14,80 @@ public partial class SuperHackerGolf
 
     public override void OnUpdate()
     {
+        // E25: per-call diagnostic try/catches. The old single-outer-catch
+        // turned zero-rva exceptions anywhere in the tick into a generic
+        // "OnUpdate swallowed X" log, giving us no way to isolate the bad
+        // call. Now each major sub-call is wrapped individually and logs
+        // its name on first throw. Rate-limited via onUpdateErrorTimestamps
+        // so the log isn't drowned in spam.
         float currentTime = Time.time;
-
-        InvalidateResolvedContextIfLost();
-        HandleInput();
-        UpdateShotTelemetry();
+        TickGuarded("InvalidateResolvedContextIfLost", InvalidateResolvedContextIfLost);
+        TickGuarded("HandleInput", HandleInput);
+        TickGuarded("UpdateShotTelemetry", UpdateShotTelemetry);
 
         if ((playerMovement == null || playerGolfer == null) && currentTime >= nextPlayerSearchTime)
         {
             nextPlayerSearchTime = currentTime + playerSearchInterval;
-            ResolvePlayerContext();
+            TickGuarded("ResolvePlayerContext", () => ResolvePlayerContext());
         }
 
-        EnsureLocalGolfBallReference(false);
+        TickGuarded("EnsureLocalGolfBallReference", () => EnsureLocalGolfBallReference(false));
 
         if (playerGolfer != null && currentTime >= nextIdealSwingCalculationTime)
         {
             nextIdealSwingCalculationTime = currentTime + idealSwingCalculationInterval;
-            CalculateIdealSwingParameters(false);
+            TickGuarded("CalculateIdealSwingParameters", () => CalculateIdealSwingParameters(false));
         }
 
-        EnsureVisualsInitialized();
+        TickGuarded("EnsureVisualsInitialized", EnsureVisualsInitialized);
         if (visualsInitialized)
         {
-            UpdateTrails();
-            UpdateHud();
-            UpdateImpactPreview();
+            TickGuarded("UpdateTrails", UpdateTrails);
+            TickGuarded("UpdateHud", () => UpdateHud(false));
+            TickGuarded("UpdateImpactPreview", UpdateImpactPreview);
         }
 
+        TickGuarded("TickForcedShield", TickForcedShield);
+        TickGuarded("TickCombatAssists", TickCombatAssists);
+    }
+
+    // Per-method diagnostic wrapper. If the call throws, log its name with the
+    // exception type + message, but rate-limit repeated failures to once per
+    // 5 seconds per method so a consistent zero-rva doesn't spam the log.
+    private Dictionary<string, float> onUpdateErrorTimestamps = new Dictionary<string, float>();
+
+    private void TickGuarded(string label, Action call)
+    {
+        try
+        {
+            call();
+        }
+        catch (Exception ex)
+        {
+            float now = Time.realtimeSinceStartup;
+            float last;
+            if (!onUpdateErrorTimestamps.TryGetValue(label, out last) || now - last > 5f)
+            {
+                onUpdateErrorTimestamps[label] = now;
+                MelonLoader.MelonLogger.Warning(
+                    $"[SuperHackerGolf] {label} threw {ex.GetType().Name}: {ex.Message} " +
+                    $"(silenced for 5s)");
+            }
+        }
     }
 
     public override void OnLateUpdate()
     {
-        AutoAimCamera();
+        TickGuarded("AutoAimCamera", AutoAimCamera);
 
         if (assistEnabled && isLeftMousePressed && !autoReleaseTriggeredThisCharge)
         {
-            AutoSwingRelease();
+            TickGuarded("AutoSwingRelease", AutoSwingRelease);
         }
+
+        // E31: ESP snapshot built in LateUpdate so OnGUI Repaint can consume
+        // it without doing physics/transform reads inside GUI painting.
+        TickGuarded("TickEspSnapshot", TickEspSnapshot);
     }
 
     private void HandleInput()
@@ -96,28 +134,12 @@ public partial class SuperHackerGolf
             return;
         }
 
-        if (WasConfiguredKeyPressed(assistToggleKey))
-        {
-            ToggleAssist();
-        }
-
-        if (WasConfiguredKeyPressed(coffeeBoostKey))
-        {
-            AddCoffeeBoost();
-        }
-
-        if (WasConfiguredKeyPressed(nearestBallModeKey))
-        {
-            ToggleNearestBallMode();
-        }
-
-        if (WasConfiguredKeyPressed(unlockAllCosmeticsKey))
-        {
-            UnlockAllCosmetics();
-        }
-
-        // E1 graft: settings GUI toggle
-        UpdateSettingsGuiHotkey();
+        // E31b: unified bind system. Replaces the per-bind WasConfiguredKeyPressed
+        // fan-out. Single tick walks every registered bind, supports per-bind
+        // Hold/Toggle/Released, and also handles the listening state for GUI
+        // rebinding.
+        TickGuarded("kb.binds", TickBinds);
+        TickGuarded("kb.settingsGui", UpdateSettingsGuiHotkey);
     }
 
     private void ToggleAssist()
@@ -229,6 +251,7 @@ public partial class SuperHackerGolf
         cachedGolfBalls.Clear();
         nextPredictedPathRefreshTime = 0f;
         currentAimTargetPosition = Vector3.zero;
+        windCompensatedAimTarget = Vector3.zero;
         currentSwingOriginPosition = Vector3.zero;
         holePosition = Vector3.zero;
         flagPosition = Vector3.zero;

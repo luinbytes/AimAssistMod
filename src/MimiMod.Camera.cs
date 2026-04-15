@@ -244,7 +244,20 @@ public partial class SuperHackerGolf
 
             Vector3 playerPosition = playerGolfer.transform.position;
             Vector3 aimReferencePosition = golfBall != null ? golfBall.transform.position : playerPosition;
-            currentAimTargetPosition = GetAimTargetPosition(aimReferencePosition);
+
+            // E12: prefer wind-compensated aim target (from CalculateIdealSwingParameters)
+            // so the player yaw is steered into the wind — otherwise AutoAimCamera would
+            // re-read the raw hole position every frame, overwriting the compensation
+            // computed in OnUpdate and causing shots to fire along the uncompensated yaw.
+            Vector3 rawAim = GetAimTargetPosition(aimReferencePosition);
+            if (windCompensatedAimTarget != Vector3.zero)
+            {
+                currentAimTargetPosition = windCompensatedAimTarget;
+            }
+            else
+            {
+                currentAimTargetPosition = rawAim;
+            }
             currentSwingOriginPosition = GetSwingOriginPosition();
 
             if (currentAimTargetPosition == Vector3.zero || currentSwingOriginPosition == Vector3.zero)
@@ -253,7 +266,15 @@ public partial class SuperHackerGolf
                 return;
             }
 
-            Vector3 flatAimDirection = currentAimTargetPosition - currentSwingOriginPosition;
+            // E13: player yaw must point from the BALL (true launch origin) toward
+            // the compensated aim, not from the CLUB position. The 2D wind solver
+            // computed compensatedAim assuming ball as origin, so the yaw applied
+            // to the player has to match that frame-of-reference or the launch
+            // direction will be off by a few degrees (1-3m landing error).
+            // The camera position itself still orbits around the player for the
+            // player's POV — only the yaw's atan2 reference changes.
+            Vector3 yawOrigin = golfBall != null ? golfBall.transform.position : currentSwingOriginPosition;
+            Vector3 flatAimDirection = currentAimTargetPosition - yawOrigin;
             flatAimDirection.y = 0f;
             if (flatAimDirection.sqrMagnitude < 0.0001f)
             {

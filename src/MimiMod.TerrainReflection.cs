@@ -62,6 +62,9 @@ public partial class SuperHackerGolf
     private float holeRefreshNextTime;
     private readonly float holeRefreshInterval = 2f;
     private readonly List<HoleBounds> cachedHoles = new List<HoleBounds>(8);
+    private int lastLoggedHoleCount = -1;
+    private float lastLoggedFirstHoleX;
+    private float lastLoggedFirstHoleZ;
 
     private struct HoleBounds
     {
@@ -296,9 +299,26 @@ public partial class SuperHackerGolf
                 });
             }
 
+            // E25: only log when the hole count or first-hole identity changes.
+            // Previously this fired every refresh interval (~10s) and spammed
+            // the log with identical "Discovered 1 hole trigger(s)" lines.
             if (cachedHoles.Count > 0)
             {
-                MelonLogger.Msg($"[SuperHackerGolf] Discovered {cachedHoles.Count} hole trigger(s); first holeRadius={cachedHoles[0].RadiusXZ:F3}m topY={cachedHoles[0].TopY:F2}");
+                bool changed = cachedHoles.Count != lastLoggedHoleCount ||
+                               Mathf.Abs(cachedHoles[0].Center.x - lastLoggedFirstHoleX) > 0.1f ||
+                               Mathf.Abs(cachedHoles[0].Center.z - lastLoggedFirstHoleZ) > 0.1f;
+                if (changed)
+                {
+                    MelonLogger.Msg($"[SuperHackerGolf] Discovered {cachedHoles.Count} hole trigger(s); first holeRadius={cachedHoles[0].RadiusXZ:F3}m topY={cachedHoles[0].TopY:F2}");
+                    lastLoggedHoleCount = cachedHoles.Count;
+                    lastLoggedFirstHoleX = cachedHoles[0].Center.x;
+                    lastLoggedFirstHoleZ = cachedHoles[0].Center.z;
+                }
+            }
+            else if (lastLoggedHoleCount != 0)
+            {
+                MelonLogger.Msg("[SuperHackerGolf] No hole triggers found");
+                lastLoggedHoleCount = 0;
             }
         }
         catch (Exception ex)

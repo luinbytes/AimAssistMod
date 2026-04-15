@@ -239,12 +239,16 @@ public partial class SuperHackerGolf
         }
     }
 
-    private static void OnAntiCheatDetectionEventFired()
+    // E18: the real signature is Action<int> (connection id). Previously
+    // this was parameterless, which made Delegate.CreateDelegate silently
+    // return null and skip binding, so the canary never fired even when
+    // thresholds were crossed. Fixed to take the connId parameter.
+    private static void OnAntiCheatDetectionEventFired(int playerConnectionId)
     {
         MelonLogger.BigError(
             "MimiMod",
-            "ANTI-CHEAT DETECTION EVENT FIRED — an automated action crossed a suspicious or confirmed-cheating threshold. " +
-            "Inspect the last few log lines for the graft that triggered it and increase its rate floor.");
+            $"ANTI-CHEAT DETECTION EVENT FIRED for connection {playerConnectionId} — an automated action crossed a suspicious or confirmed-cheating threshold. " +
+            "The BNetworkManager kick patches SHOULD swallow this, but if you got kicked anyway inspect which Harmony patches actually applied at startup.");
     }
 
     /// <summary>

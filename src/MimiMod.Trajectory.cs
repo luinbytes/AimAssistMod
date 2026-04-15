@@ -252,6 +252,21 @@ public partial class SuperHackerGolf
 
     private void BuildPredictedTrajectoryPoints(float shotPower, float swingPitch, List<Vector3> outputPoints)
     {
+        try
+        {
+            BuildPredictedTrajectoryPointsCore(shotPower, swingPitch, outputPoints);
+        }
+        catch (Exception ex)
+        {
+            // E20: scene-teardown hardening. See FreezePredictedTrajectorySnapshot.
+            MelonLoader.MelonLogger.Warning($"[SuperHackerGolf] BuildPredictedTrajectoryPoints swallowed {ex.GetType().Name}: {ex.Message}");
+            try { outputPoints?.Clear(); } catch { }
+            predictedPathCacheValid = false;
+        }
+    }
+
+    private void BuildPredictedTrajectoryPointsCore(float shotPower, float swingPitch, List<Vector3> outputPoints)
+    {
         outputPoints.Clear();
         ResetImpactPreviewCache(ReferenceEquals(outputPoints, predictedPathPoints), ReferenceEquals(outputPoints, frozenPredictedPathPoints));
         if (playerGolfer == null || golfBall == null || currentAimTargetPosition == Vector3.zero)
@@ -588,37 +603,58 @@ public partial class SuperHackerGolf
 
     private void FreezePredictedTrajectorySnapshot(float shotPower, float swingPitch)
     {
-        if (!frozenTrailEnabled)
+        // E20: scene-teardown hardening. When the player quits back to the
+        // main menu while a swing is mid-release, the Unity scene tears down
+        // faster than our cached component references notice. Touching
+        // those references (especially the Unity internal-call bridge for
+        // `Time.get_time`, LineRenderer setters, etc.) throws a
+        // BadImageFormatException "Method has zero rva" which spams the log
+        // and causes the mod to stop ticking. Wrap the whole method in a
+        // try/catch that swallows and logs. Real shots running in a normal
+        // scene don't hit this path.
+        try
         {
-            frozenPredictedPathPoints.Clear();
+            if (!frozenTrailEnabled)
+            {
+                frozenPredictedPathPoints.Clear();
+                predictedPathCacheValid = false;
+                frozenTrailLineDirty = false;
+                if (frozenPredictedPathLine != null)
+                {
+                    frozenPredictedPathLine.positionCount = 0;
+                }
+                return;
+            }
+
+            EnsureTrailRenderers();
+            if (frozenPredictedPathLine == null)
+            {
+                return;
+            }
+
+            BuildPredictedTrajectoryPoints(Mathf.Clamp(shotPower, 0.05f, 2f), swingPitch, frozenPredictedPathPoints);
+            ApplyFrozenTrailToLine();
+
+            lockLivePredictedPath = true;
+            observedBallMotionSinceLastShot = false;
+            predictedTrajectoryHideStartTime = Time.time;
+            predictedPathPoints.Clear();
+            predictedPathCacheValid = false;
+            predictedTrailLineDirty = false;
+
+            if (predictedPathLine != null)
+            {
+                predictedPathLine.positionCount = 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            MelonLoader.MelonLogger.Warning($"[SuperHackerGolf] FreezePredictedTrajectorySnapshot swallowed {ex.GetType().Name}: {ex.Message}");
+            // Reset the state caches so we don't re-enter a bad code path.
+            try { frozenPredictedPathPoints?.Clear(); } catch { }
             predictedPathCacheValid = false;
             frozenTrailLineDirty = false;
-            if (frozenPredictedPathLine != null)
-            {
-                frozenPredictedPathLine.positionCount = 0;
-            }
-            return;
-        }
-
-        EnsureTrailRenderers();
-        if (frozenPredictedPathLine == null)
-        {
-            return;
-        }
-
-        BuildPredictedTrajectoryPoints(Mathf.Clamp(shotPower, 0.05f, 2f), swingPitch, frozenPredictedPathPoints);
-        ApplyFrozenTrailToLine();
-
-        lockLivePredictedPath = true;
-        observedBallMotionSinceLastShot = false;
-        predictedTrajectoryHideStartTime = Time.time;
-        predictedPathPoints.Clear();
-        predictedPathCacheValid = false;
-        predictedTrailLineDirty = false;
-
-        if (predictedPathLine != null)
-        {
-            predictedPathLine.positionCount = 0;
+            lockLivePredictedPath = false;
         }
     }
 
@@ -1205,62 +1241,185 @@ public partial class SuperHackerGolf
         return true;
     }
 
-    // E11 single-pass crosswind aim compensation.
+    // E12 iterative crosswind aim compensation.
     //
-    // Runs the 1D wind-aware solver against the raw hole target, simulates the
-    // resulting shot to see where it actually lands under wind, then offsets
-    // the aim by the observed miss vector and re-runs the 1D solver ONCE.
-    // No loop. No accumulation. If the first pass already lands within 0.5m
-    // of the hole, skip compensation entirely.
+    // Previous single-pass approach landed within 0.5-2m of the hole. Good,
+    // but not perfect. Iterating the correction (using the prior pass's
+    // aim+speed as the starting point for the next sim) converges to <0.25m
+    // for most shots in 2-3 iterations.
+    //
+    // Algorithm:
+    //   aim_k = hole                  (initial guess)
+    //   for k in 1..maxIter:
+    //     speed_k = 1D-solve(origin, aim_k, pitch)
+    //     landing_k = sim(origin, aim_k, speed_k)
+    //     err_k = hole - landing_k
+    //     if |err_k| < epsilon: done
+    //     aim_{k+1} = aim_k + err_k   (shift aim by observed miss)
+    //
+    // The nonlinearity of wind drift vs aim direction means each iteration's
+    // correction is approximate, but the error shrinks geometrically because
+    // the drift error is smooth and small after the first pass.
     private bool TrySolveAimAndSpeedSinglePass(Vector3 shotOrigin, Vector3 holePos, float swingPitch,
                                                 out Vector3 compensatedAim, out float solvedSpeed)
     {
         compensatedAim = holePos;
         solvedSpeed = 0f;
 
-        // Pass 1: find best speed for hole target (no aim offset).
-        if (!TrySolveLaunchSpeedWindAware(shotOrigin, holePos, swingPitch, out float firstSpeed))
-        {
-            return false;
-        }
-        solvedSpeed = firstSpeed;
-
-        // Forward-sim the shot to observe actual landing under wind.
         Vector3 horizToHole = holePos - shotOrigin;
         horizToHole.y = 0f;
-        if (horizToHole.sqrMagnitude < 0.0001f) return true;
-        Vector3 aimDirHoriz = horizToHole.normalized;
-        float pitchRad = swingPitch * Mathf.Deg2Rad;
-        Vector3 launchDir = aimDirHoriz * Mathf.Cos(pitchRad) + Vector3.up * Mathf.Sin(pitchRad);
+        if (horizToHole.sqrMagnitude < 0.0001f)
+        {
+            return TrySolveLaunchSpeedWindAware(shotOrigin, holePos, swingPitch, out solvedSpeed);
+        }
 
         Vector3 wind = GetCachedWindVector();
         float ballWF = GetBallWindFactor();
         float ballCWF = GetBallCrossWindFactor();
         bool isRocketDriver = IsLocalPlayerUsingRocketDriver();
         float airDrag = GetGameExactAirDragFactor(isRocketDriver);
+        float pitchRad = swingPitch * Mathf.Deg2Rad;
 
-        Vector3 landing = SimulateBallLandingPoint(shotOrigin, launchDir, firstSpeed,
-                                                   wind, ballWF, ballCWF, airDrag, holePos.y);
-
-        Vector3 miss = holePos - landing;
-        miss.y = 0f;
-        if (miss.sqrMagnitude < 0.25f)
+        // E14b: cache the full-physics solve. The 2D iterative solver runs
+        // SimulateBallFullRestPoint up to maxIter times, each doing ~5000
+        // raycast-driven physics steps. At 10Hz call rate this is hundreds
+        // of thousands of raycasts per second — enough to tank the frame
+        // rate. Skip the solve entirely if the inputs haven't meaningfully
+        // changed since the last successful solve.
+        const float ballEpsSq = 0.25f;      // 0.5m
+        const float holeEpsSq = 0.25f;      // 0.5m
+        const float windEpsSq = 1f;         // 1 m/s
+        const float pitchEps = 0.5f;        // 0.5°
+        if (solveCacheValid &&
+            (shotOrigin - solveCacheBallPos).sqrMagnitude < ballEpsSq &&
+            (holePos - solveCacheHolePos).sqrMagnitude < holeEpsSq &&
+            (wind - solveCacheWind).sqrMagnitude < windEpsSq &&
+            Mathf.Abs(swingPitch - solveCachePitch) < pitchEps)
         {
-            // First pass already lands within 0.5m — no compensation needed.
-            return true;
+            compensatedAim = solveCacheAim;
+            solvedSpeed = solveCacheSpeed;
+            // diagnostics already populated from the prior fresh solve — leave as-is.
+            return solveCacheSuccess;
         }
 
-        // Single correction: aim = hole + miss (offsets aim to compensate).
-        compensatedAim = holePos + miss;
+        Vector3 aimCurrent = holePos;
+        Vector3 bestAim = holePos;
+        float bestSpeed = 0f;
+        float bestErrSq = float.MaxValue;
+        bool anySolved = false;
+        const int maxIter = 5;
+        const float convergenceEpsilonSq = 0.0625f; // 0.25m
+        lastSolverConverged = false;
+        lastSolverIterCount = 0;
+        // Hard cap on how far the iterative correction may drift the aim
+        // away from the original hole target. Drift larger than this is
+        // almost always the iteration going haywire (oscillation, local
+        // minimum, or a bad 1D solve on iter 0) rather than legitimate
+        // wind compensation — so we abort and use the last-known-good aim.
+        const float maxAimDriftSq = 144f; // 12m
 
-        // Pass 2: find best speed for the compensated aim target.
-        if (!TrySolveLaunchSpeedWindAware(shotOrigin, compensatedAim, swingPitch, out float secondSpeed))
+        for (int iter = 0; iter < maxIter; iter++)
         {
-            // Pass 2 failed — fall back to the first speed but keep the offset aim.
-            return true;
+            // Safety clamp: if aim has drifted absurdly far from the hole,
+            // stop iterating and use whichever aim was best so far.
+            if ((aimCurrent - holePos).sqrMagnitude > maxAimDriftSq)
+            {
+                break;
+            }
+
+            if (!TrySolveLaunchSpeedWindAware(shotOrigin, aimCurrent, swingPitch, out float iterSpeed))
+            {
+                // 1D solver failed — if we already have a previous iteration's
+                // solution, keep it. Otherwise bail.
+                if (!anySolved) return false;
+                break;
+            }
+            anySolved = true;
+
+            Vector3 horizToAim = aimCurrent - shotOrigin;
+            horizToAim.y = 0f;
+            if (horizToAim.sqrMagnitude < 0.0001f) break;
+            Vector3 aimDirHoriz = horizToAim.normalized;
+            Vector3 launchDir = aimDirHoriz * Mathf.Cos(pitchRad) + Vector3.up * Mathf.Sin(pitchRad);
+
+            // E15b: revert to impact-target. E14 used SimulateBallFullRestPoint
+            // to target the ball's rest position (accounting for bounce+roll),
+            // but the simplified dt + stepping in that helper didn't match the
+            // real bounce/roll tightly enough, so the solver would converge
+            // to aim points that produced landing errors several meters off.
+            // E13's simple impact-target solver landed within 1-2m of hole
+            // consistently — the ball still rolls past but that's a lesser
+            // evil than the aim being systematically wrong. Keeping the full
+            // rest helper in the codebase for the future.
+            Vector3 landing = SimulateBallLandingPoint(shotOrigin, launchDir, iterSpeed,
+                                                        wind, ballWF, ballCWF, airDrag, holePos.y);
+
+            Vector3 err = holePos - landing;
+            err.y = 0f;
+            float errSq = err.sqrMagnitude;
+
+            // Track the best aim across iterations — high-wind shots can
+            // oscillate near the minimum instead of converging monotonically,
+            // so we snapshot the iteration that achieved the lowest landing
+            // error rather than trusting the last one.
+            if (errSq < bestErrSq)
+            {
+                bestErrSq = errSq;
+                bestAim = aimCurrent;
+                bestSpeed = iterSpeed;
+            }
+
+            if (errSq < convergenceEpsilonSq)
+            {
+                bestAim = aimCurrent;
+                bestSpeed = iterSpeed;
+                bestErrSq = errSq;
+                lastSolverIterCount = iter + 1;
+                lastSolverConverged = true;
+                break;
+            }
+
+            // Shift aim by the observed miss, scaled down as iterations go
+            // to damp oscillation in strong-wind regimes where the landing
+            // function is highly sensitive to aim direction.
+            float damp;
+            if (iter == 0) damp = 1.0f;
+            else if (iter < 3) damp = 0.85f;
+            else if (iter < 6) damp = 0.6f;
+            else damp = 0.4f;
+            aimCurrent += err * damp;
         }
-        solvedSpeed = secondSpeed;
-        return true;
+
+        if (!lastSolverConverged)
+        {
+            lastSolverIterCount = maxIter;
+        }
+        lastSolverFinalErrM = Mathf.Sqrt(bestErrSq);
+        compensatedAim = bestAim;
+        solvedSpeed = bestSpeed;
+
+        // E15f: roll-offset correction REMOVED. The one-shot correction pass
+        // assumed the roll vector was invariant under small aim shifts — it
+        // isn't. When the solver shifted aim back by the observed roll, the
+        // new (shorter) aim triggered a lower 1D-solved launch speed, which
+        // meant less real roll, so the shift was systematically too large.
+        // For short shots (4-10m) this pushed the aim PAST the player origin,
+        // producing wild 20m misses. The impact-target solver alone (E13/E15b)
+        // reliably lands the ball within 0.5-1.5m of the hole — ball then
+        // rolls past, but that's a predictable bias better corrected by a
+        // pitch/club selection layer than by aim-shift math.
+        lastSolverCompensatedAim = compensatedAim;
+        lastSolverSpeedMps = solvedSpeed;
+
+        solveCacheValid = true;
+        solveCacheBallPos = shotOrigin;
+        solveCacheHolePos = holePos;
+        solveCacheWind = wind;
+        solveCachePitch = swingPitch;
+        solveCacheAim = compensatedAim;
+        solveCacheSpeed = solvedSpeed;
+        solveCacheSuccess = anySolved;
+        return anySolved;
     }
 
     // E8b: wind-aware launch-speed solver.
@@ -1302,8 +1461,18 @@ public partial class SuperHackerGolf
         float bestSpeed = 100f;
         float bestDistSq = float.MaxValue;
 
+        // E15c: cap search at the game's actual max launch speed. Previously
+        // scanned up to 220 m/s, which allowed the solver to return speeds
+        // > 85 m/s (MaxPowerSwingHitSpeed) — physically unreachable. The game
+        // caps power at 100% so any "solved" speed above 85 just yields an
+        // 85 m/s launch and the ball falls short. Checked at build time via
+        // reflected GolfBallSettings but fall back to 86 for safety.
+        float maxSearchSpeed = GetBallMaxSwingHitSpeed();
+        if (maxSearchSpeed < 10f) maxSearchSpeed = 86f;
+        maxSearchSpeed += 1f; // 1m/s headroom for refine band
+
         // Coarse scan
-        for (float speed = 5f; speed <= 220f; speed += 3f)
+        for (float speed = 5f; speed <= maxSearchSpeed; speed += 2f)
         {
             Vector3 landing = SimulateBallLandingPoint(shotOrigin, launchDir, speed, wind, ballWF, ballCWF, airDrag, targetPos.y);
             float d2 = (landing - targetPos).sqrMagnitude;
@@ -1314,10 +1483,13 @@ public partial class SuperHackerGolf
             }
         }
 
-        // Refine around best
-        float lo = Mathf.Max(1f, bestSpeed - 3f);
-        float hi = Mathf.Min(240f, bestSpeed + 3f);
-        for (float speed = lo; speed <= hi; speed += 0.5f)
+        // E15c: tighter refine step — 0.2 m/s instead of 0.5 m/s. At 52m range
+        // with pitch 45°, a 0.5 m/s speed step shifts landing by ~1m, which
+        // was the noise floor keeping the 2D aim solver from converging on
+        // high-arc shots.
+        float lo = Mathf.Max(1f, bestSpeed - 2f);
+        float hi = Mathf.Min(maxSearchSpeed, bestSpeed + 2f);
+        for (float speed = lo; speed <= hi; speed += 0.2f)
         {
             Vector3 landing = SimulateBallLandingPoint(shotOrigin, launchDir, speed, wind, ballWF, ballCWF, airDrag, targetPos.y);
             float d2 = (landing - targetPos).sqrMagnitude;
@@ -1335,6 +1507,207 @@ public partial class SuperHackerGolf
 
         solvedSpeed = bestSpeed;
         return true;
+    }
+
+    // E14: full-physics sim including bounce + roll, returns the ball's final
+    // rest point. Used by the 2D aim solver so it can target rest-on-hole
+    // instead of first-impact-on-hole (short shots at 45° pitch bounce and
+    // roll 10m+ past impact on the green, so aiming for impact-on-hole
+    // leaves the ball rolling far past).
+    //
+    // Mirrors BuildPredictedTrajectoryPoints' physics:
+    //   - airborne phase with wind + drag
+    //   - bounce chain using TerrainLayerSettings per-contact bounciness
+    //   - ground roll phase using terrain layer damping
+    //   - hole-in termination
+    //
+    // Deliberately skips: trail painting, impact-preview storage, path caching.
+    // Limits step/time counts match BuildPredictedTrajectoryPoints for fidelity.
+    private Vector3 SimulateBallFullRestPoint(Vector3 shotOrigin, Vector3 launchDir, float launchSpeed,
+                                                Vector3 windVector, float ballWF, float ballCWF, float airDragFactor,
+                                                bool includeBounceRoll)
+    {
+        // E14b: the solver calls this inside an iteration loop, so cap step
+        // counts aggressively — the solver only needs a ballpark rest point,
+        // not visual-fidelity physics. ~1.5x the base dt keeps accuracy high
+        // enough while cutting raycasts by 66%.
+        float dt = Time.fixedDeltaTime * 1.5f;
+        int maxAirSteps = 180;
+        int maxRollSteps = 180;
+        float maxTime = 6f;
+        Vector3 gravity = Physics.gravity;
+        Vector3 position = shotOrigin;
+        Vector3 velocity = launchDir * launchSpeed;
+        float elapsed = 0f;
+        LayerMask groundMask = GetBallGroundableMask();
+
+        Vector3 impactPoint = position;
+        Vector3 impactNormal = Vector3.up;
+        bool impactResolved = false;
+
+        // ── Airborne phase ──
+        for (int i = 0; i < maxAirSteps && elapsed < maxTime; i++)
+        {
+            Vector3 prev = position;
+            velocity += gravity * dt;
+
+            Vector3 effectiveWind = Vector3.zero;
+            if (windVector.sqrMagnitude > 0.0001f && velocity.sqrMagnitude > 0.0001f)
+            {
+                Vector3 wa = Vector3.Project(windVector, velocity);
+                Vector3 wc = windVector - wa;
+                effectiveWind = wa * ballWF + wc * ballCWF;
+            }
+            Vector3 relVel = velocity - effectiveWind;
+            float dragDelta = Mathf.Max(0f, airDragFactor * relVel.sqrMagnitude * dt);
+            velocity -= relVel * dragDelta;
+            position += velocity * dt;
+
+            // NOTE: no IsPositionInHole check during airborne phase in the
+            // solver sim. A 45° shot aimed directly at the hole descends
+            // through the hole volume in one step, which would make the
+            // sim report "holed in" and short-circuit with no bounce/roll.
+            // That would collapse the 2D solver to always-aim-at-hole. We
+            // only want hole-in to count if the ball is rolling on the
+            // ground at the hole — that's handled in the roll phase below.
+            RaycastHit hit;
+            if (Physics.Linecast(prev, position, out hit, groundMask, QueryTriggerInteraction.Ignore))
+            {
+                impactResolved = true;
+                impactPoint = hit.point;
+                impactNormal = hit.normal.sqrMagnitude > 0.0001f ? hit.normal : Vector3.up;
+                position = impactPoint;
+                break;
+            }
+            if (position.y < -200f) return position;
+            elapsed += dt;
+        }
+
+        if (!impactResolved || !includeBounceRoll)
+        {
+            return position;
+        }
+
+        // ── Bounce chain ──
+        const float BOUNCE_LIFTOFF_SPEED = 0.5f;
+        const int MAX_BOUNCES = 12;
+        Vector3 currentGroundNormal = impactNormal;
+        if (currentGroundNormal.y < 0.0001f) currentGroundNormal = Vector3.up;
+        bool grounded = false;
+
+        for (int b = 0; b < MAX_BOUNCES; b++)
+        {
+            float layerBounciness, layerDynFriction, layerLinearDamping,
+                  layerStopMaxPitch, layerRollMinPitch;
+            AnimationCurve layerCurve;
+            TryGetTerrainLayerAtPoint(position,
+                out layerBounciness, out layerDynFriction, out layerLinearDamping,
+                out layerStopMaxPitch, out layerRollMinPitch, out layerCurve);
+
+            float normalDot = Vector3.Dot(velocity, currentGroundNormal);
+            Vector3 vNormal = currentGroundNormal * normalDot;
+            Vector3 vTangent = velocity - vNormal;
+            Vector3 vOut = vTangent - vNormal * Mathf.Clamp01(layerBounciness);
+            float outNormalSpeed = Vector3.Dot(vOut, currentGroundNormal);
+
+            if (outNormalSpeed < BOUNCE_LIFTOFF_SPEED)
+            {
+                velocity = vTangent;
+                grounded = true;
+                break;
+            }
+            velocity = vOut;
+
+            bool nextImpact = false;
+            for (int j = 0; j < maxAirSteps && elapsed < maxTime; j++)
+            {
+                Vector3 prev = position;
+                velocity += gravity * dt;
+
+                Vector3 eWind = Vector3.zero;
+                if (windVector.sqrMagnitude > 0.0001f && velocity.sqrMagnitude > 0.0001f)
+                {
+                    Vector3 wa = Vector3.Project(windVector, velocity);
+                    Vector3 wc = windVector - wa;
+                    eWind = wa * ballWF + wc * ballCWF;
+                }
+                Vector3 rv = velocity - eWind;
+                float dd = Mathf.Max(0f, airDragFactor * rv.sqrMagnitude * dt);
+                velocity -= rv * dd;
+                position += velocity * dt;
+
+                // E15e: NO IsPositionInHole during solver bounce arcs either.
+                // The solver wants the actual rest point so it can compute the
+                // roll offset. Letting the sim short-circuit on hole overlap
+                // made short-iron shots return rest==hole even when the real
+                // ball rolls past, killing the roll correction.
+
+                RaycastHit hit;
+                if (Physics.Linecast(prev, position, out hit, groundMask, QueryTriggerInteraction.Ignore))
+                {
+                    position = hit.point;
+                    currentGroundNormal = hit.normal.sqrMagnitude > 0.0001f ? hit.normal : Vector3.up;
+                    nextImpact = true;
+                    break;
+                }
+                if (position.y < -200f) return position;
+                elapsed += dt;
+            }
+            if (!nextImpact) return position;
+        }
+
+        if (!grounded) return position;
+
+        // ── Roll phase ──
+        float rollingDownhillTime = 0f;
+        float rollElapsed = 0f;
+        Vector3 rollNormal = currentGroundNormal;
+        float maxRollTime = maxTime;
+
+        for (int i = 0; i < maxRollSteps && rollElapsed < maxRollTime; i++)
+        {
+            float layerBounciness, layerDynFriction, layerLinearDamping,
+                  layerStopMaxPitch, layerRollMinPitch;
+            AnimationCurve layerCurve;
+            TryGetTerrainLayerAtPoint(position,
+                out layerBounciness, out layerDynFriction, out layerLinearDamping,
+                out layerStopMaxPitch, out layerRollMinPitch, out layerCurve);
+
+            float groundPitchDeg = Vector3.Angle(Vector3.up, rollNormal);
+            Vector3 velAlongGround = Vector3.ProjectOnPlane(velocity, rollNormal);
+            float speedAlong = velAlongGround.magnitude;
+            if (speedAlong < 0.05f) break;
+
+            float damping = ComputeTerrainDamping(groundPitchDeg, speedAlong, rollingDownhillTime,
+                layerLinearDamping, layerStopMaxPitch, layerRollMinPitch, layerCurve);
+
+            float fac = Mathf.Max(0f, 1f - damping * dt);
+            velocity = velocity - velAlongGround + velAlongGround * fac;
+            position += velocity * dt;
+
+            // E15e: NO IsPositionInHole during solver roll phase either. Our
+            // IsPositionInHole is an AABB test that fires for any ball rolling
+            // near the cup, but real GolfHoleTrigger.OnTriggerEnter needs the
+            // collider to actually overlap + fall in — a fast-rolling ball
+            // passes over the rim without holing. Letting the sim report
+            // rest==hole on near-misses defeated the roll correction.
+
+            Vector3 probeOrigin = position + Vector3.up * 0.5f;
+            RaycastHit groundHit;
+            if (Physics.Raycast(probeOrigin, Vector3.down, out groundHit, 2f, groundMask, QueryTriggerInteraction.Ignore))
+            {
+                position = groundHit.point;
+                rollNormal = groundHit.normal.sqrMagnitude > 0.0001f ? groundHit.normal : Vector3.up;
+            }
+
+            if (velocity.y < -0.005f) rollingDownhillTime += dt;
+            else rollingDownhillTime = 0f;
+
+            rollElapsed += dt;
+            elapsed += dt;
+        }
+
+        return position;
     }
 
     // Forward-sim a ball launch until it descends through targetGroundY. Matches
@@ -1503,6 +1876,7 @@ public partial class SuperHackerGolf
                                               out Vector3 compensatedAim, out float windAwareSpeed))
             {
                 currentAimTargetPosition = compensatedAim;
+                windCompensatedAimTarget = compensatedAim;
                 toTarget = currentAimTargetPosition - shotOrigin;
                 horizontalToTarget = new Vector3(toTarget.x, 0f, toTarget.z);
                 horizontalDistance = horizontalToTarget.magnitude;
@@ -1511,6 +1885,7 @@ public partial class SuperHackerGolf
             }
             else
             {
+                windCompensatedAimTarget = Vector3.zero;
                 physicsPower = CalculateRequiredPowerForPitch(horizontalDistance, heightDifference, idealSwingPitch);
             }
 
@@ -1549,6 +1924,7 @@ public partial class SuperHackerGolf
             holePosition = Vector3.zero;
             flagPosition = Vector3.zero;
             currentAimTargetPosition = Vector3.zero;
+            windCompensatedAimTarget = Vector3.zero;
             return FindGolfHoleComponent();
         }
         catch
@@ -1598,6 +1974,55 @@ public partial class SuperHackerGolf
                 holePosition = holeCandidate;
                 flagPosition = flagCandidate;
                 foundHole = true;
+            }
+
+            // E17d: resolve the actual GREEN surface y at the cup location.
+            //
+            // E17c (RaycastAll at exact hole xz) failed on holes where the
+            // cup is a literal hole in the terrain mesh: the single ray
+            // threads through the cup opening and hits ONLY the flag pole
+            // (which sits inside the cup), so hole_y gets pinned to the flag
+            // top ~6m above the green. Fix: probe at a small offset ring
+            // around the cup center. Any of the 4 ring points lands on the
+            // solid green around the rim, which has the same y as the cup
+            // opening's surface level. Take the lowest terrain hit across
+            // all probes and exclude obvious flag-height hits.
+            if (foundHole)
+            {
+                const float RING_OFFSET = 0.6f;   // 60cm — outside a standard cup
+                const float PROBE_HEIGHT = 30f;
+                const float PROBE_DEPTH = 60f;
+                Vector3[] probeOffsets =
+                {
+                    new Vector3(0f, 0f, 0f),
+                    new Vector3(RING_OFFSET, 0f, 0f),
+                    new Vector3(-RING_OFFSET, 0f, 0f),
+                    new Vector3(0f, 0f, RING_OFFSET),
+                    new Vector3(0f, 0f, -RING_OFFSET),
+                };
+                int groundMask = GetBallGroundableMask();
+                float bestY = float.MaxValue;
+                for (int p = 0; p < probeOffsets.Length; p++)
+                {
+                    Vector3 probeOrigin = new Vector3(
+                        holePosition.x + probeOffsets[p].x,
+                        holePosition.y + PROBE_HEIGHT,
+                        holePosition.z + probeOffsets[p].z);
+                    RaycastHit[] hits = Physics.RaycastAll(probeOrigin, Vector3.down, PROBE_DEPTH,
+                                                          groundMask, QueryTriggerInteraction.Ignore);
+                    if (hits == null) continue;
+                    for (int i = 0; i < hits.Length; i++)
+                    {
+                        if (hits[i].point.y < bestY)
+                        {
+                            bestY = hits[i].point.y;
+                        }
+                    }
+                }
+                if (bestY < float.MaxValue)
+                {
+                    holePosition = new Vector3(holePosition.x, bestY, holePosition.z);
+                }
             }
 
             return foundHole;

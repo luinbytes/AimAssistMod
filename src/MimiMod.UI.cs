@@ -172,14 +172,45 @@ public partial class SuperHackerGolf
 
     private string BuildBottomHudText()
     {
+        // E22: tighter hint bar. Each keybind is a [KEY] label + action name
+        // pair, separated by a subtle dot. Colors reflect state (cyan for
+        // active assist hint, green for nearest-ball toggle, orange for
+        // forced-shield toggle, muted grey otherwise).
+        const string sep = "  <color=#4A5566>•</color>  ";
+        const string keyColor = "#FFD06A";     // warm amber for key labels
+        const string labelColor = "#D6DCE4";   // soft off-white for action text
+        const string mutedColor = "#8A94A3";
+
         string assistHint = assistEnabled
-            ? "<color=#8ED9FF>Hold RMB to aim camera</color>"
-            : "<color=#A8A8A8>Press " + ModTextHelper.EscapeRichText(assistToggleKeyLabel) + " to enable assist</color>";
-        string nearestBallColor = nearestAnyBallModeEnabled ? "#39FF8F" : "#A8A8A8";
-        return assistHint +
-               "  <color=#FFD06A>|</color>  <color=#FFD06A>" + ModTextHelper.EscapeRichText(coffeeBoostKeyLabel) + " - give speed boost</color>" +
-               "  <color=#FFD06A>|</color>  <color=" + nearestBallColor + ">" + ModTextHelper.EscapeRichText(nearestBallModeKeyLabel) + " - nearest ball</color>" +
-               "  <color=#FFD06A>|</color>  <color=#FFD06A>" + ModTextHelper.EscapeRichText(unlockAllCosmeticsKeyLabel) + " - unlock cosmetics</color>";
+            ? "<color=#8ED9FF><b>Hold RMB</b> to aim camera</color>"
+            : "<color=" + mutedColor + ">Press <b>" + ModTextHelper.EscapeRichText(assistToggleKeyLabel) + "</b> to enable assist</color>";
+
+        string nearestBallKeyColor = nearestAnyBallModeEnabled ? "#39FF8F" : keyColor;
+        string nearestBallLabelColor = nearestAnyBallModeEnabled ? "#39FF8F" : labelColor;
+        string shieldKeyColor = shieldForcedOn ? "#39FF8F" : keyColor;
+        string shieldLabelColor = shieldForcedOn ? "#39FF8F" : labelColor;
+        string weaponKeyColor = weaponAssistEnabled ? "#39FF8F" : keyColor;
+        string weaponLabelColor = weaponAssistEnabled ? "#39FF8F" : labelColor;
+        string mineKeyColor = mineAssistEnabled ? "#39FF8F" : keyColor;
+        string mineLabelColor = mineAssistEnabled ? "#39FF8F" : labelColor;
+        string bhopKeyColor = bunnyhopEnabled ? "#39FF8F" : keyColor;
+        string bhopLabelColor = bunnyhopEnabled ? "#39FF8F" : labelColor;
+
+        return assistHint + sep
+            + Hint(keyColor, labelColor, coffeeBoostKeyLabel, "speed") + sep
+            + Hint(nearestBallKeyColor, nearestBallLabelColor, nearestBallModeKeyLabel, "ball") + sep
+            + Hint(keyColor, labelColor, unlockAllCosmeticsKeyLabel, "cosmetics") + sep
+            + Hint(shieldKeyColor, shieldLabelColor, shieldToggleKeyLabel, shieldForcedOn ? "shield•" : "shield") + sep
+            + Hint(weaponKeyColor, weaponLabelColor, weaponAssistToggleKeyLabel, weaponAssistEnabled ? "aimbot•" : "aimbot") + sep
+            + Hint(bhopKeyColor, bhopLabelColor, bunnyhopToggleKeyLabel, bunnyhopEnabled ? "bhop•" : "bhop") + sep
+            + Hint(mineKeyColor, mineLabelColor, mineAssistToggleKeyLabel, mineAssistEnabled ? "mines•" : "mines") + sep
+            + Hint(keyColor, labelColor, settingsGuiKeyLabel, "settings");
+    }
+
+    private static string Hint(string keyHex, string labelHex, string keyLabel, string action)
+    {
+        return "<color=" + keyHex + "><b>[" + ModTextHelper.EscapeRichText(keyLabel) + "]</b></color>"
+             + " <color=" + labelHex + ">" + ModTextHelper.EscapeRichText(action) + "</color>";
     }
 
     private void EnsureTrailRenderers()

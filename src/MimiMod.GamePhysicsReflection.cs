@@ -332,10 +332,18 @@ public partial class SuperHackerGolf
 
     internal bool IsLocalPlayerUsingRocketDriver()
     {
-        if (playerGolfer == null)
-        {
-            return false;
-        }
+        int itemInt = GetLocalPlayerEquippedItemType();
+        return itemInt == ROCKET_DRIVER_ITEM_TYPE_VALUE;
+    }
+
+    /// <summary>
+    /// Returns the ItemType int value for the local player's currently-equipped
+    /// item, or -1 on lookup failure. Shared between rocket driver detection
+    /// (for physics), weapon assist (for aimbot activation), etc.
+    /// </summary>
+    internal int GetLocalPlayerEquippedItemType()
+    {
+        if (playerGolfer == null) return -1;
 
         try
         {
@@ -345,10 +353,10 @@ public partial class SuperHackerGolf
                 cachedPlayerInfoProperty = playerGolfer.GetType().GetProperty("PlayerInfo",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
             }
-            if (cachedPlayerInfoProperty == null) return false;
+            if (cachedPlayerInfoProperty == null) return -1;
 
             object playerInfo = cachedPlayerInfoProperty.GetValue(playerGolfer, null);
-            if (playerInfo == null) return false;
+            if (playerInfo == null) return -1;
 
             // PlayerInfo.Inventory
             if (cachedInventoryProperty == null)
@@ -356,10 +364,10 @@ public partial class SuperHackerGolf
                 cachedInventoryProperty = playerInfo.GetType().GetProperty("Inventory",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
             }
-            if (cachedInventoryProperty == null) return false;
+            if (cachedInventoryProperty == null) return -1;
 
             object inventory = cachedInventoryProperty.GetValue(playerInfo, null);
-            if (inventory == null) return false;
+            if (inventory == null) return -1;
 
             // Inventory.GetEffectivelyEquippedItem(bool ignoreEquipmentHiding)
             if (cachedGetEffectivelyEquippedItem == null)
@@ -377,18 +385,17 @@ public partial class SuperHackerGolf
                     break;
                 }
             }
-            if (cachedGetEffectivelyEquippedItem == null) return false;
+            if (cachedGetEffectivelyEquippedItem == null) return -1;
 
             object itemTypeValue = cachedGetEffectivelyEquippedItem.Invoke(inventory, new object[] { false });
-            if (itemTypeValue == null) return false;
+            if (itemTypeValue == null) return -1;
 
             // ItemType is an int-backed enum; cast via Convert to handle the boxed enum.
-            int itemInt = Convert.ToInt32(itemTypeValue);
-            return itemInt == ROCKET_DRIVER_ITEM_TYPE_VALUE;
+            return Convert.ToInt32(itemTypeValue);
         }
         catch
         {
-            return false;
+            return -1;
         }
     }
 
@@ -519,6 +526,12 @@ public partial class SuperHackerGolf
 
     internal float ComputeGroundDamping(float pitch, float speed, float rollingDownhillTime, out float fullStopFactor)
     {
+        float raw = ComputeGroundDampingRaw(pitch, speed, rollingDownhillTime, out fullStopFactor);
+        return raw * Mathf.Max(0.1f, rollDampingMultiplier);
+    }
+
+    private float ComputeGroundDampingRaw(float pitch, float speed, float rollingDownhillTime, out float fullStopFactor)
+    {
         EnsurePhysicsReflectionInitialized();
         fullStopFactor = 0f;
 
@@ -590,6 +603,15 @@ public partial class SuperHackerGolf
                                           float layerLinearDamping, float layerStopMaxPitch, float layerRollMinPitch,
                                           AnimationCurve layerCurve)
     {
+        float raw = ComputeTerrainDampingRaw(pitch, speed, rollingDownhillTime,
+            layerLinearDamping, layerStopMaxPitch, layerRollMinPitch, layerCurve);
+        return raw * Mathf.Max(0.1f, rollDampingMultiplier);
+    }
+
+    private float ComputeTerrainDampingRaw(float pitch, float speed, float rollingDownhillTime,
+                                          float layerLinearDamping, float layerStopMaxPitch, float layerRollMinPitch,
+                                          AnimationCurve layerCurve)
+    {
         EnsurePhysicsReflectionInitialized();
 
         // If the terrain query failed (layer linear damping is zero), fall
@@ -597,7 +619,7 @@ public partial class SuperHackerGolf
         if (layerLinearDamping < 0.0001f)
         {
             float unused;
-            return ComputeGroundDamping(pitch, speed, rollingDownhillTime, out unused);
+            return ComputeGroundDampingRaw(pitch, speed, rollingDownhillTime, out unused);
         }
 
         float fullStopMaxPitch = layerStopMaxPitch > 0.1f ? layerStopMaxPitch : cachedGroundFullStopMaxPitch;

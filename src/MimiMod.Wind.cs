@@ -318,14 +318,29 @@ public partial class SuperHackerGolf
     /// </summary>
     internal void RefreshBallWindFactors()
     {
-        if (golfBall == null)
-        {
-            return;
-        }
+        // E15d: Unity's fake-null on destroyed objects doesn't play nice with
+        // the ?. operator — `destroyedObj?.foo` STILL calls `foo` because C#
+        // reference null is different from Unity's overridden ==. Any access
+        // to a destroyed GolfBall (happens every hole change in multiplayer)
+        // threw NRE every frame here, which halted the entire aim pipeline.
+        // Guard every dereference with an explicit Unity == null compare.
+        if (golfBall == null) return;
+        GameObject ballGo;
+        try { ballGo = golfBall.gameObject; }
+        catch { return; }
+        if (ballGo == null) return;
 
-        if (ballWindSettingsInitialized && ReferenceEquals(cachedBallHittableComponent?.gameObject, golfBall.gameObject))
+        if (ballWindSettingsInitialized && cachedBallHittableComponent != null)
         {
-            return;
+            GameObject hittableGo;
+            try { hittableGo = cachedBallHittableComponent.gameObject; }
+            catch { hittableGo = null; }
+            if (hittableGo != null && ReferenceEquals(hittableGo, ballGo))
+            {
+                return;
+            }
+            // Stale cache — the ball was destroyed/respawned. Reset and re-resolve.
+            cachedBallHittableComponent = null;
         }
 
         ballWindSettingsInitialized = true;
@@ -335,7 +350,7 @@ public partial class SuperHackerGolf
         try
         {
             // The Hittable component lives on the same GameObject as GolfBall.
-            Component[] all = golfBall.gameObject.GetComponents<Component>();
+            Component[] all = ballGo.GetComponents<Component>();
             Component hittable = null;
             for (int i = 0; i < all.Length; i++)
             {

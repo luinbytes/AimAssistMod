@@ -347,6 +347,12 @@ public partial class SuperHackerGolf
         ResetTrailState();
         HideImpactPreview();
         nextPredictedPathRefreshTime = 0f;
+        // E15d: invalidate wind-factor + hole caches so the next frame re-resolves
+        // against the new ball. In multiplayer the golfBall reference swaps every
+        // hole change; stale Hittable component pointers threw NRE every frame.
+        ballWindSettingsInitialized = false;
+        cachedBallHittableComponent = null;
+        solveCacheValid = false;
         lastShotPathBallPosition = nextBall != null
             ? nextBall.transform.position + Vector3.up * shotPathHeightOffset
             : Vector3.zero;

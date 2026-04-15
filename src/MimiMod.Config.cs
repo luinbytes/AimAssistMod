@@ -44,7 +44,11 @@ public partial class SuperHackerGolf
         coffeeBoostKeyName = "F2";
         nearestBallModeKeyName = "F3";
         unlockAllCosmeticsKeyName = "F4";
-        settingsGuiKeyName = "F8";
+        shieldToggleKeyName = "F6";
+        weaponAssistToggleKeyName = "F7";
+        mineAssistToggleKeyName = "F9";
+        bunnyhopToggleKeyName = "F10";
+        settingsGuiKeyName = "Insert";
         allowOvercharge = false;
         instaHitEnabled = false;
         telemetryEnabled = false;
@@ -108,6 +112,18 @@ public partial class SuperHackerGolf
                 case "unlock_all_cosmetics_key":
                     unlockAllCosmeticsKeyName = ParseKeyNameOrDefault(value, unlockAllCosmeticsKeyName);
                     break;
+                case "shield_toggle_key":
+                    shieldToggleKeyName = ParseKeyNameOrDefault(value, shieldToggleKeyName);
+                    break;
+                case "weapon_assist_toggle_key":
+                    weaponAssistToggleKeyName = ParseKeyNameOrDefault(value, weaponAssistToggleKeyName);
+                    break;
+                case "mine_assist_toggle_key":
+                    mineAssistToggleKeyName = ParseKeyNameOrDefault(value, mineAssistToggleKeyName);
+                    break;
+                case "bunnyhop_toggle_key":
+                    bunnyhopToggleKeyName = ParseKeyNameOrDefault(value, bunnyhopToggleKeyName);
+                    break;
                 case "settings_gui_key":
                     settingsGuiKeyName = ParseKeyNameOrDefault(value, settingsGuiKeyName);
                     break;
@@ -125,6 +141,9 @@ public partial class SuperHackerGolf
                     break;
                 case "wind_drag_strength":
                     windDragStrength = ParseFloatOrDefault(value, windDragStrength, 0f, 1f);
+                    break;
+                case "roll_damping_multiplier":
+                    rollDampingMultiplier = ParseFloatOrDefault(value, rollDampingMultiplier, 0.5f, 5f);
                     break;
                 case "actual_trail_enabled":
                     actualTrailEnabled = ParseBoolOrDefault(value, actualTrailEnabled);
@@ -196,6 +215,10 @@ public partial class SuperHackerGolf
         builder.AppendLine("coffee_boost_key=" + coffeeBoostKeyName);
         builder.AppendLine("nearest_ball_mode_key=" + nearestBallModeKeyName);
         builder.AppendLine("unlock_all_cosmetics_key=" + unlockAllCosmeticsKeyName);
+        builder.AppendLine("shield_toggle_key=" + shieldToggleKeyName);
+        builder.AppendLine("weapon_assist_toggle_key=" + weaponAssistToggleKeyName);
+        builder.AppendLine("mine_assist_toggle_key=" + mineAssistToggleKeyName);
+        builder.AppendLine("bunnyhop_toggle_key=" + bunnyhopToggleKeyName);
         builder.AppendLine("settings_gui_key=" + settingsGuiKeyName);
         builder.AppendLine();
         if (includeComments)
@@ -223,18 +246,19 @@ public partial class SuperHackerGolf
         if (includeComments)
         {
             builder.AppendLine();
-            builder.AppendLine("# Wind strength multiplier for the predicted trajectory (0 = ignore wind, 0.0041 default).");
-            builder.AppendLine("# Empirically tuned against src=Dir*Spd readings; dial via GUI slider if your game differs.");
+            builder.AppendLine("# E23: wind_strength / wind_drag_strength are now dead — physics uses");
+            builder.AppendLine("# reflected ball WindFactor/CrossWindFactor from HittableSettings.Wind.");
+            builder.AppendLine("# Kept here for backwards compatibility with older saved configs.");
+            builder.AppendLine();
+            builder.AppendLine("# Roll-damping multiplier. Default 1.0 uses the game's per-terrain-layer");
+            builder.AppendLine("# LinearDamping as-is. Raising this (1.5-3.0) makes the sim's roll phase");
+            builder.AppendLine("# stop the ball sooner — useful if predicted rest points run past the");
+            builder.AppendLine("# actual rest points on the green. Verify effect in the CSV column");
+            builder.AppendLine("# `pred_rest_delta_mag` before committing to a new value.");
         }
         builder.AppendLine("wind_strength=" + windStrength.ToString("0.####", CultureInfo.InvariantCulture));
-        if (includeComments)
-        {
-            builder.AppendLine();
-            builder.AppendLine("# Along-wind (headwind/tailwind) drag coefficient. Controls how much a");
-            builder.AppendLine("# headwind shortens a shot or tailwind extends it. ~10x stronger than");
-            builder.AppendLine("# wind_strength because drag affects range much more than crosswind drift.");
-        }
         builder.AppendLine("wind_drag_strength=" + windDragStrength.ToString("0.####", CultureInfo.InvariantCulture));
+        builder.AppendLine("roll_damping_multiplier=" + rollDampingMultiplier.ToString("0.###", CultureInfo.InvariantCulture));
         builder.AppendLine();
         builder.AppendLine("actual_trail_enabled=" + (actualTrailEnabled ? "true" : "false"));
         builder.AppendLine("actual_trail_start_width=" + actualTrailStartWidth.ToString("0.###", CultureInfo.InvariantCulture));
@@ -357,11 +381,19 @@ public partial class SuperHackerGolf
         coffeeBoostKey = ParseConfiguredKey(coffeeBoostKeyName, Key.F2);
         nearestBallModeKey = ParseConfiguredKey(nearestBallModeKeyName, Key.F3);
         unlockAllCosmeticsKey = ParseConfiguredKey(unlockAllCosmeticsKeyName, Key.F4);
-        settingsGuiKey = ParseConfiguredKey(settingsGuiKeyName, Key.F8);
+        shieldToggleKey = ParseConfiguredKey(shieldToggleKeyName, Key.F6);
+        weaponAssistToggleKey = ParseConfiguredKey(weaponAssistToggleKeyName, Key.F7);
+        mineAssistToggleKey = ParseConfiguredKey(mineAssistToggleKeyName, Key.F9);
+        bunnyhopToggleKey = ParseConfiguredKey(bunnyhopToggleKeyName, Key.F10);
+        settingsGuiKey = ParseConfiguredKey(settingsGuiKeyName, Key.Insert);
         assistToggleKeyLabel = FormatKeyLabel(assistToggleKeyName);
         coffeeBoostKeyLabel = FormatKeyLabel(coffeeBoostKeyName);
         nearestBallModeKeyLabel = FormatKeyLabel(nearestBallModeKeyName);
         unlockAllCosmeticsKeyLabel = FormatKeyLabel(unlockAllCosmeticsKeyName);
+        shieldToggleKeyLabel = FormatKeyLabel(shieldToggleKeyName);
+        weaponAssistToggleKeyLabel = FormatKeyLabel(weaponAssistToggleKeyName);
+        mineAssistToggleKeyLabel = FormatKeyLabel(mineAssistToggleKeyName);
+        bunnyhopToggleKeyLabel = FormatKeyLabel(bunnyhopToggleKeyName);
         settingsGuiKeyLabel = FormatKeyLabel(settingsGuiKeyName);
     }
 

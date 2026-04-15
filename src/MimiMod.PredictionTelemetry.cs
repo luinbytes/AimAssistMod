@@ -39,6 +39,29 @@ public partial class SuperHackerGolf
     private bool telemetryImpactRecorded;
     private bool telemetryBallHasLaunched;
     private bool telemetryIsRocketDriverAtRelease;
+    private bool telemetryHoledIn;
+    // E15 solver diagnostics snapshotted at shot release.
+    private Vector3 telemetrySolverAimAtRelease;
+    private float telemetrySolverSpeedAtRelease;
+    private float telemetrySolverErrAtRelease;
+    private int telemetrySolverIterAtRelease;
+    private bool telemetrySolverConvergedAtRelease;
+    // E21: predicted final rest captured at shot release (last point of the
+    // frozen trajectory after bounce+roll). Compared against the ball's true
+    // resting position to measure bounce/roll prediction accuracy as a metric
+    // distinct from first-impact prediction accuracy.
+    private Vector3 telemetryPredictedRestAtRelease;
+    private bool telemetryPredictedRestValid;
+    private int telemetryPredictedPathPointCountAtRelease;
+    // E23: terrain-layer snapshot at shot release. Captures what the game
+    // reports as the per-layer linear damping at the ball's xz, so we can
+    // correlate roll-prediction accuracy with the damping value.
+    private float telemetryLayerLinearDampingAtRelease;
+    private float telemetryRollDampingMultiplierAtRelease;
+    // E23: predicted OOB flag. Set when the frozen trajectory's max horizontal
+    // distance from the hole exceeds a generous threshold (50m). Lets us
+    // filter OOB shots from accuracy stats.
+    private bool telemetryPredictedPathGoesFar;
     private float telemetryMaxY;
     private float telemetryCaptureTime;
     private float telemetryPrevVelY;
@@ -102,6 +125,7 @@ public partial class SuperHackerGolf
         telemetryShotInProgress = true;
         telemetryImpactRecorded = false;
         telemetryBallHasLaunched = false;
+        telemetryHoledIn = false;
         telemetryCaptureTime = Time.time;
         telemetryPredictedLanding = predictedLanding;
         telemetryShotOrigin = golfBall.transform.position;
@@ -118,6 +142,53 @@ public partial class SuperHackerGolf
         telemetrySwingPowerMultiplierAtRelease = 1f;
         TryGetServerSwingPowerMultiplier(out telemetrySwingPowerMultiplierAtRelease);
         telemetryIsRocketDriverAtRelease = IsLocalPlayerUsingRocketDriver();
+        telemetrySolverAimAtRelease = lastSolverCompensatedAim;
+        telemetrySolverSpeedAtRelease = lastSolverSpeedMps;
+        telemetrySolverErrAtRelease = lastSolverFinalErrM;
+        telemetrySolverIterAtRelease = lastSolverIterCount;
+        telemetrySolverConvergedAtRelease = lastSolverConverged;
+
+        // E21: snapshot the predicted FINAL REST point from the frozen path.
+        telemetryPredictedRestValid = false;
+        telemetryPredictedPathPointCountAtRelease = 0;
+        telemetryPredictedPathGoesFar = false;
+        if (frozenPredictedPathPoints != null && frozenPredictedPathPoints.Count > 0)
+        {
+            telemetryPredictedRestAtRelease = frozenPredictedPathPoints[frozenPredictedPathPoints.Count - 1];
+            telemetryPredictedPathPointCountAtRelease = frozenPredictedPathPoints.Count;
+            telemetryPredictedRestValid = true;
+
+            // E23: scan the frozen path for the maximum horizontal distance
+            // from the hole. If any point is >50m from the hole, the shot is
+            // likely going OOB or dramatically past the green.
+            float maxDistSq = 0f;
+            for (int i = 0; i < frozenPredictedPathPoints.Count; i++)
+            {
+                Vector3 p = frozenPredictedPathPoints[i];
+                float dx = p.x - telemetryHolePosition.x;
+                float dz = p.z - telemetryHolePosition.z;
+                float d2 = dx * dx + dz * dz;
+                if (d2 > maxDistSq) maxDistSq = d2;
+            }
+            telemetryPredictedPathGoesFar = maxDistSq > 2500f; // 50m
+        }
+
+        // E23: capture terrain layer damping at the ball's xz at shot release.
+        // This is what the game's physics use for the first ground contact.
+        telemetryLayerLinearDampingAtRelease = 0f;
+        telemetryRollDampingMultiplierAtRelease = rollDampingMultiplier;
+        try
+        {
+            Vector3 probe = telemetryShotOrigin;
+            float b, df, ld, fsmp, frmp;
+            AnimationCurve ac;
+            if (TryGetTerrainLayerAtPoint(probe, out b, out df, out ld,
+                out fsmp, out frmp, out ac))
+            {
+                telemetryLayerLinearDampingAtRelease = ld;
+            }
+        }
+        catch { }
     }
 
     /// <summary>
@@ -130,13 +201,23 @@ public partial class SuperHackerGolf
         {
             return;
         }
+
+        float elapsed = Time.time - telemetryCaptureTime;
+
+        // Ball destroyed mid-shot = hole-in (GolfHoleTrigger.OnTriggerEnter
+        // despawns the ball). Finalize with the last known ball position
+        // instead of silently bailing.
         if (golfBall == null || golfBall.gameObject == null)
         {
+            if (telemetryBallHasLaunched && elapsed > telemetryMinShotTime)
+            {
+                telemetryHoledIn = true;
+                FinalizeShotTelemetry(telemetryPrevBallPos, Vector3.zero, elapsed);
+            }
             telemetryShotInProgress = false;
             return;
         }
 
-        float elapsed = Time.time - telemetryCaptureTime;
         if (elapsed > telemetryMaxShotTime)
         {
             // Something went wrong — ball never stopped. Abort without logging.
@@ -148,6 +229,22 @@ public partial class SuperHackerGolf
 
         if (!TryGetGolfBallVelocity(out Vector3 ballVel))
         {
+            return;
+        }
+
+        // Mid-flight hole entry — the ball is still alive this frame but
+        // inside the GolfHoleTrigger volume. Finalize immediately rather than
+        // waiting for the game to despawn it a frame later.
+        if (telemetryBallHasLaunched && elapsed > telemetryMinShotTime && IsPositionInHole(ballPos))
+        {
+            telemetryHoledIn = true;
+            if (!telemetryImpactRecorded)
+            {
+                telemetryActualImpact = ballPos;
+                telemetryImpactRecorded = true;
+            }
+            FinalizeShotTelemetry(ballPos, ballVel, elapsed);
+            telemetryShotInProgress = false;
             return;
         }
 
@@ -218,9 +315,14 @@ public partial class SuperHackerGolf
             return;
         }
 
-        // Ball has stopped — log.
+        FinalizeShotTelemetry(ballPos, ballVel, elapsed);
+        telemetryShotInProgress = false;
+    }
+
+    private void FinalizeShotTelemetry(Vector3 finalBallPos, Vector3 finalBallVel, float elapsed)
+    {
         telemetryShotCounter++;
-        Vector3 finalRest = ballPos;
+        Vector3 finalRest = finalBallPos;
 
         // OOB detection: if the ball's final rest is very close to the shot
         // origin (< 1.5m) AND elapsed flight time is long enough that it
@@ -229,15 +331,13 @@ public partial class SuperHackerGolf
         // doesn't pollute the delta regression.
         bool outOfBounds = false;
         if (!telemetryImpactRecorded &&
+            !telemetryHoledIn &&
             elapsed > 1.5f &&
             (finalRest - telemetryShotOrigin).sqrMagnitude < 2.25f) // < 1.5m
         {
             outOfBounds = true;
         }
 
-        // E11: rocket driver (super club) flag — captured at shot release via
-        // reflection on PlayerInfo.Inventory.GetEffectivelyEquippedItem. No
-        // more >100% heuristic; this is the actual game truth.
         bool likelySuperClub = telemetryIsRocketDriverAtRelease;
 
         Vector3 actualImpact = telemetryImpactRecorded ? telemetryActualImpact : finalRest;
@@ -255,14 +355,25 @@ public partial class SuperHackerGolf
             ? "wind=CALM"
             : $"wind=({telemetryWindAtRelease.x:F1},{telemetryWindAtRelease.z:F1}) |{windMag:F1}|";
 
-        string impactLabel = telemetryImpactRecorded ? "impactΔ" : (outOfBounds ? "OOB_rest" : "restΔ");
+        string impactLabel = telemetryHoledIn ? "HOLED" : (telemetryImpactRecorded ? "impactΔ" : (outOfBounds ? "OOB_rest" : "restΔ"));
         string oobTag = outOfBounds ? " [OOB]" : "";
+        string holedTag = telemetryHoledIn ? " [HOLE-IN]" : "";
         string superTag = likelySuperClub ? " [SUPER]" : "";
+        float summaryPredRestDelta = 0f;
+        if (telemetryPredictedRestValid)
+        {
+            Vector3 d = new Vector3(
+                telemetryPredictedRestAtRelease.x - finalRest.x,
+                0f,
+                telemetryPredictedRestAtRelease.z - finalRest.z);
+            summaryPredRestDelta = d.magnitude;
+        }
         string summary = $"#{telemetryShotCounter} dist={shotDistance:F1}m " +
                          $"pwr={telemetryAppliedPower * 100f:F0}% " +
                          $"pitch={telemetryShotPitch:F1}° " +
-                         $"{windLabel}{oobTag}{superTag} " +
+                         $"{windLabel}{oobTag}{holedTag}{superTag} " +
                          $"{impactLabel}=({impactDelta.x:+0.00;-0.00},{impactDelta.z:+0.00;-0.00}) |{impactDelta.magnitude:F2}|m " +
+                         $"bounceΔ=|{summaryPredRestDelta:F2}|m " +
                          $"vsHole=|{vsHole.magnitude:F2}|m " +
                          $"flight={elapsed:F1}s";
 
@@ -284,8 +395,6 @@ public partial class SuperHackerGolf
             flightTime: elapsed,
             outOfBounds: outOfBounds,
             likelySuperClub: likelySuperClub);
-
-        telemetryShotInProgress = false;
     }
 
     private void AppendTelemetryCsv(float shotDistance, Vector3 finalRest, Vector3 actualImpact,
@@ -302,19 +411,71 @@ public partial class SuperHackerGolf
             CultureInfo ic = CultureInfo.InvariantCulture;
             StringBuilder sb = new StringBuilder(512);
 
-            if (!telemetryCsvHeaderWritten && !File.Exists(telemetryCsvPath))
+            const string expectedHeader = "shot,wind_state,had_airborne_impact,out_of_bounds,holed_in,super_club,solver_converged,pred_goes_far,shot_distance_m,flight_s,wind_x,wind_z,wind_mag,wind_factor,cross_wind_factor,air_drag,swing_power_mul,power_pct,pitch_deg,layer_linear_damping,roll_damping_mul,origin_x,origin_y,origin_z,hole_x,hole_y,hole_z,solver_aim_x,solver_aim_z,solver_aim_offset_m,solver_iter_count,solver_err_m,solver_speed_mps,predict_x,predict_y,predict_z,pred_rest_x,pred_rest_y,pred_rest_z,pred_path_pts,impact_x,impact_y,impact_z,final_x,final_y,final_z,impact_delta_x,impact_delta_y,impact_delta_z,impact_delta_mag,rest_delta_mag,pred_rest_delta_mag,vs_hole_mag";
+
+            if (!telemetryCsvHeaderWritten)
             {
-                sb.AppendLine("shot,wind_state,had_airborne_impact,out_of_bounds,super_club,shot_distance_m,flight_s,wind_x,wind_z,wind_mag,wind_factor,cross_wind_factor,air_drag,swing_power_mul,power_pct,pitch_deg,origin_x,origin_y,origin_z,hole_x,hole_y,hole_z,predict_x,predict_y,predict_z,impact_x,impact_y,impact_z,final_x,final_y,final_z,impact_delta_x,impact_delta_y,impact_delta_z,impact_delta_mag,rest_delta_mag,vs_hole_mag");
+                bool needsRewrite = false;
+                if (File.Exists(telemetryCsvPath))
+                {
+                    try
+                    {
+                        using (StreamReader sr = new StreamReader(telemetryCsvPath))
+                        {
+                            string firstLine = sr.ReadLine();
+                            if (firstLine == null || firstLine != expectedHeader)
+                            {
+                                needsRewrite = true;
+                            }
+                        }
+                    }
+                    catch { needsRewrite = true; }
+
+                    if (needsRewrite)
+                    {
+                        // Header changed — rename the existing CSV so we don't
+                        // corrupt it with mis-aligned rows, then start fresh.
+                        string backup = telemetryCsvPath + "." + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".bak";
+                        try { File.Move(telemetryCsvPath, backup); } catch { }
+                    }
+                }
+
+                if (!File.Exists(telemetryCsvPath))
+                {
+                    sb.AppendLine(expectedHeader);
+                }
                 telemetryCsvHeaderWritten = true;
             }
 
             string windState = telemetryWindAtRelease.magnitude < 0.5f ? "calm" : "windy";
 
+            float solverAimOffset = new Vector3(
+                telemetrySolverAimAtRelease.x - telemetryHolePosition.x,
+                0f,
+                telemetrySolverAimAtRelease.z - telemetryHolePosition.z).magnitude;
+
+            // E21: distance from our predicted final rest to the ball's
+            // observed final rest — the bounce+roll prediction accuracy metric.
+            // Zero if the predicted rest wasn't captured (shouldn't happen
+            // once we get frozen path points at shot release).
+            float predRestDeltaMag = 0f;
+            if (telemetryPredictedRestValid)
+            {
+                Vector3 prd = new Vector3(
+                    telemetryPredictedRestAtRelease.x - finalRest.x,
+                    telemetryPredictedRestAtRelease.y - finalRest.y,
+                    telemetryPredictedRestAtRelease.z - finalRest.z);
+                predRestDeltaMag = prd.magnitude;
+            }
+
             sb.Append(telemetryShotCounter.ToString(ic)).Append(',')
               .Append(windState).Append(',')
               .Append(telemetryImpactRecorded ? "1" : "0").Append(',')
               .Append(outOfBounds ? "1" : "0").Append(',')
+              .Append(telemetryHoledIn ? "1" : "0").Append(',')
               .Append(likelySuperClub ? "1" : "0").Append(',')
+              .Append(telemetrySolverConvergedAtRelease ? "1" : "0").Append(',')
+              .Append(telemetryPredictedPathGoesFar ? "1" : "0").Append(',')
               .Append(shotDistance.ToString("0.###", ic)).Append(',')
               .Append(flightTime.ToString("0.###", ic)).Append(',')
               .Append(telemetryWindAtRelease.x.ToString("0.###", ic)).Append(',')
@@ -326,15 +487,27 @@ public partial class SuperHackerGolf
               .Append(telemetrySwingPowerMultiplierAtRelease.ToString("0.####", ic)).Append(',')
               .Append((telemetryAppliedPower * 100f).ToString("0.##", ic)).Append(',')
               .Append(telemetryShotPitch.ToString("0.##", ic)).Append(',')
+              .Append(telemetryLayerLinearDampingAtRelease.ToString("0.####", ic)).Append(',')
+              .Append(telemetryRollDampingMultiplierAtRelease.ToString("0.##", ic)).Append(',')
               .Append(telemetryShotOrigin.x.ToString("0.##", ic)).Append(',')
               .Append(telemetryShotOrigin.y.ToString("0.##", ic)).Append(',')
               .Append(telemetryShotOrigin.z.ToString("0.##", ic)).Append(',')
               .Append(telemetryHolePosition.x.ToString("0.##", ic)).Append(',')
               .Append(telemetryHolePosition.y.ToString("0.##", ic)).Append(',')
               .Append(telemetryHolePosition.z.ToString("0.##", ic)).Append(',')
+              .Append(telemetrySolverAimAtRelease.x.ToString("0.##", ic)).Append(',')
+              .Append(telemetrySolverAimAtRelease.z.ToString("0.##", ic)).Append(',')
+              .Append(solverAimOffset.ToString("0.###", ic)).Append(',')
+              .Append(telemetrySolverIterAtRelease.ToString(ic)).Append(',')
+              .Append(telemetrySolverErrAtRelease.ToString("0.###", ic)).Append(',')
+              .Append(telemetrySolverSpeedAtRelease.ToString("0.##", ic)).Append(',')
               .Append(telemetryPredictedLanding.x.ToString("0.##", ic)).Append(',')
               .Append(telemetryPredictedLanding.y.ToString("0.##", ic)).Append(',')
               .Append(telemetryPredictedLanding.z.ToString("0.##", ic)).Append(',')
+              .Append((telemetryPredictedRestValid ? telemetryPredictedRestAtRelease.x : 0f).ToString("0.##", ic)).Append(',')
+              .Append((telemetryPredictedRestValid ? telemetryPredictedRestAtRelease.y : 0f).ToString("0.##", ic)).Append(',')
+              .Append((telemetryPredictedRestValid ? telemetryPredictedRestAtRelease.z : 0f).ToString("0.##", ic)).Append(',')
+              .Append(telemetryPredictedPathPointCountAtRelease.ToString(ic)).Append(',')
               .Append(actualImpact.x.ToString("0.##", ic)).Append(',')
               .Append(actualImpact.y.ToString("0.##", ic)).Append(',')
               .Append(actualImpact.z.ToString("0.##", ic)).Append(',')
@@ -346,6 +519,7 @@ public partial class SuperHackerGolf
               .Append(impactDelta.z.ToString("0.###", ic)).Append(',')
               .Append(impactDelta.magnitude.ToString("0.###", ic)).Append(',')
               .Append(restDelta.magnitude.ToString("0.###", ic)).Append(',')
+              .Append(predRestDeltaMag.ToString("0.###", ic)).Append(',')
               .Append(vsHole.magnitude.ToString("0.###", ic))
               .AppendLine();
 
