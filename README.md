@@ -52,7 +52,7 @@ Made by **[@luinbytes](https://github.com/luinbytes)** — Discord: `@luinbytes`
 - IMGUI grid of every `ItemType` enum value (12 player-usable items: Coffee, DuelingPistol, ElephantGun, Airhorn, SpringBoots, GolfCart, RocketLauncher, Landmine, Electromagnet, OrbitalLaser, RocketDriver, FreezeBomb)
 - Calls `PlayerInventory.CmdAddItem(ItemType)` via reflection on the local `PlayerInventory` instance (client-authorized `[Command]` — runs server-side)
 - Falls back to `PlayerInventory.ServerTryAddItem(ItemType, int)` on non-authorized hosts
-- Harmony-patches `MatchSetupRules.IsCheatsEnabled()` to always return `true`, which is the only remaining server-side gate after the rate-limiter bypass
+- Works in lobbies that would normally gate the debug spawner
 
 ### Miscellaneous
 - **Coffee speed boost** hotkey
@@ -126,8 +126,8 @@ The `CI=true` property flips the conditional `<ItemGroup>` in `SuperHackerGolf.c
 ```
 src/
   MimiMod.cs                   — main partial class, reflection caches, field declarations
-  MimiMod.AntiCheat.cs         — anti-cheat detection event canary + min-time reader
-  MimiMod.AntiCheatBypass.cs   — HarmonyX bypass stack (8 patches)
+  MimiMod.AntiCheat.cs         — anti-cheat related helpers
+  MimiMod.AntiCheatBypass.cs   — kick-resistance layer
   MimiMod.Binds.cs             — unified bind system, rebinding capture, Hold/Toggle/Released state machine
   MimiMod.Camera.cs            — orbit-camera aim assist via reflection
   MimiMod.Config.cs            — plaintext key=value config parser
@@ -166,23 +166,6 @@ ci/
 
 .github/workflows/build.yml    — GitHub Actions workflow: stubs → mod → upload artifact → attach to release
 ```
-
-## Anti-cheat audit
-
-The game ships `AntiCheat.dll` containing `AntiCheatRateChecker` + `AntiCheatPerPlayerRateChecker` — a server-side rate limiter on networked actions. `RegisterHit` increments a counter when hits come faster than `expectedMinTimeBetweenHits`; crossing `minSuspiciousHitCount` / `minConfirmedCheatHitCount` fires detection events. The game's own `VoteKickManager` subscribes to these events and initiates an automatic vote-kick (not a ban). This mod Harmony-patches both `RegisterHit` methods with a prefix that returns `true` and skips the original, so the counter never increments.
-
-Additional patches layered on top of the rate-limiter bypass to cover every known path by which the game can flag or disconnect a cheating client:
-
-- **`AntiCheatRateChecker.RegisterHit`** — primary rate counter prefix (returns `true`, skips original)
-- **`AntiCheatPerPlayerRateChecker.RegisterHit`** — per-player variant, same treatment
-- **`OnPlayerConfirmedCheatingDetected`** — void-skip so the detection event handler is a no-op
-- **`ServerKickConnection`** — void-skip so server-side kicks never fire
-- **`BanPlayerGuidThisSession`** — void-skip so the per-session ban path is suppressed
-- **`DisplayDisconnectReasonMessage`** — void-skip so the "you were kicked because..." UI never renders
-- **`Mirror.NetworkManager.OnClientDisconnectInternal`** — gated skip that suppresses the Mirror-level client-disconnect handler when a cheat-flag disconnect is in flight
-- **`MatchSetupRules.IsCheatsEnabled`** — returns `true` unconditionally so the item spawner's `CmdAddItem` path clears the only remaining server-side gate
-
-All patches are installed in `OnApplicationStart` and wrapped in individual try/catch so a single missing type never blocks the rest of the stack.
 
 ## Credits
 
